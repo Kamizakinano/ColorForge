@@ -3,20 +3,162 @@
   "version": 1,
   "note": "Volumi di stampa da specifiche pubbliche dei produttori. Verificare sempre con il proprio profilo slicer.",
   "printers": [
-    {"id": "bambu-x1c", "name": "Bambu Lab X1 Carbon", "build_volume_mm": [256, 256, 256], "nozzle_mm": 0.4,
-     "changers": [{"id": "ams", "name": "AMS (4 slot)", "slots": 4, "max_units": 4, "kind": "ams"}, {"id": "manual", "name": "Cambio manuale (pausa)", "slots": 1, "kind": "manual"}],
-     "slicer": "bambu_studio"},
-    {"id": "bambu-p1s", "name": "Bambu Lab P1S", "build_volume_mm": [256, 256, 256], "nozzle_mm": 0.4,
-     "changers": [{"id": "ams", "name": "AMS (4 slot)", "slots": 4, "max_units": 4, "kind": "ams"}, {"id": "manual", "name": "Cambio manuale (pausa)", "slots": 1, "kind": "manual"}],
-     "slicer": "bambu_studio"},
-    {"id": "bambu-a1", "name": "Bambu Lab A1", "build_volume_mm": [256, 256, 256], "nozzle_mm": 0.4,
-     "changers": [{"id": "ams-lite", "name": "AMS lite (4 slot)", "slots": 4, "max_units": 1, "kind": "ams"}, {"id": "manual", "name": "Cambio manuale (pausa)", "slots": 1, "kind": "manual"}],
-     "slicer": "bambu_studio"},
-    {"id": "bambu-a1-mini", "name": "Bambu Lab A1 mini", "build_volume_mm": [180, 180, 180], "nozzle_mm": 0.4,
-     "changers": [{"id": "ams-lite", "name": "AMS lite (4 slot)", "slots": 4, "max_units": 1, "kind": "ams"}, {"id": "manual", "name": "Cambio manuale (pausa)", "slots": 1, "kind": "manual"}],
-     "slicer": "bambu_studio"},
-    {"id": "prusa-mk4", "name": "Prusa MK4", "build_volume_mm": [250, 210, 220], "nozzle_mm": 0.4,
-     "changers": [{"id": "manual", "name": "Cambio manuale (M600)", "slots": 1, "kind": "manual"}],
-     "slicer": "prusaslicer"}
+    {
+      "id": "bambu-x2d",
+      "name": "Bambu Lab X2D",
+      "build_volume_mm": [
+        235.5,
+        256,
+        256
+      ],
+      "nozzle_mm": 0.4,
+      "build_volume_note": "Volume a doppio ugello (235.5x256x256), conservativo: con 8 colori su due AMS si usano entrambi gli ugelli. Ugello principale singolo: 256x256x260.",
+      "changers": [
+        {
+          "id": "ams2pro-x2",
+          "name": "2x AMS 2 Pro (8 slot)",
+          "slots": 4,
+          "max_units": 2,
+          "kind": "ams"
+        },
+        {
+          "id": "ams2pro",
+          "name": "AMS 2 Pro (4 slot)",
+          "slots": 4,
+          "max_units": 1,
+          "kind": "ams"
+        },
+        {
+          "id": "manual",
+          "name": "Cambio manuale (pausa)",
+          "slots": 1,
+          "kind": "manual"
+        }
+      ],
+      "slicer": "bambu_studio"
+    },
+    {
+      "id": "bambu-x1c",
+      "name": "Bambu Lab X1 Carbon",
+      "build_volume_mm": [
+        256,
+        256,
+        256
+      ],
+      "nozzle_mm": 0.4,
+      "changers": [
+        {
+          "id": "ams",
+          "name": "AMS (4 slot)",
+          "slots": 4,
+          "max_units": 4,
+          "kind": "ams"
+        },
+        {
+          "id": "manual",
+          "name": "Cambio manuale (pausa)",
+          "slots": 1,
+          "kind": "manual"
+        }
+      ],
+      "slicer": "bambu_studio"
+    },
+    {
+      "id": "bambu-p1s",
+      "name": "Bambu Lab P1S",
+      "build_volume_mm": [
+        256,
+        256,
+        256
+      ],
+      "nozzle_mm": 0.4,
+      "changers": [
+        {
+          "id": "ams",
+          "name": "AMS (4 slot)",
+          "slots": 4,
+          "max_units": 4,
+          "kind": "ams"
+        },
+        {
+          "id": "manual",
+          "name": "Cambio manuale (pausa)",
+          "slots": 1,
+          "kind": "manual"
+        }
+      ],
+      "slicer": "bambu_studio"
+    },
+    {
+      "id": "bambu-a1",
+      "name": "Bambu Lab A1",
+      "build_volume_mm": [
+        256,
+        256,
+        256
+      ],
+      "nozzle_mm": 0.4,
+      "changers": [
+        {
+          "id": "ams-lite",
+          "name": "AMS lite (4 slot)",
+          "slots": 4,
+          "max_units": 1,
+          "kind": "ams"
+        },
+        {
+          "id": "manual",
+          "name": "Cambio manuale (pausa)",
+          "slots": 1,
+          "kind": "manual"
+        }
+      ],
+      "slicer": "bambu_studio"
+    },
+    {
+      "id": "bambu-a1-mini",
+      "name": "Bambu Lab A1 mini",
+      "build_volume_mm": [
+        180,
+        180,
+        180
+      ],
+      "nozzle_mm": 0.4,
+      "changers": [
+        {
+          "id": "ams-lite",
+          "name": "AMS lite (4 slot)",
+          "slots": 4,
+          "max_units": 1,
+          "kind": "ams"
+        },
+        {
+          "id": "manual",
+          "name": "Cambio manuale (pausa)",
+          "slots": 1,
+          "kind": "manual"
+        }
+      ],
+      "slicer": "bambu_studio"
+    },
+    {
+      "id": "prusa-mk4",
+      "name": "Prusa MK4",
+      "build_volume_mm": [
+        250,
+        210,
+        220
+      ],
+      "nozzle_mm": 0.4,
+      "changers": [
+        {
+          "id": "manual",
+          "name": "Cambio manuale (M600)",
+          "slots": 1,
+          "kind": "manual"
+        }
+      ],
+      "slicer": "prusaslicer"
+    }
   ]
 }
