@@ -1,0 +1,198 @@
+"""Ricerca automatica di sequenza filamenti e quote di cambio colore.
+
+Modello di stampa (come HueForge con cambi per strato): la quota z di un
+pixel determina quanti strati ha; il filamento di ogni strato è globale e
+cambia a quote fissate. Il colore di un pixel con n strati è quindi la
+riflettanza dello stack 0..n calcolata dal modello ottico (LUT per quota).
+
+Ricerca: beam search su (filamento, strato d'inizio) seguita da un
+affinamento a discesa coordinata. Obiettivo: CIEDE2000 medio pesato dei
+colori rappresentativi dell'immagine (k-means in CIELAB), più una piccola
+penalità per ogni cambio colore che dipende dal profilo di qualità.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Callable
+
+import numpy as np
+from scipy.cluster.vq import kmeans2
+
+from colorforge.color.spaces import delta_e2000, linear_to_lab
+from colorforge.optics.km import OpticalModel
+
+
+@dataclass
+class QualityProfile:
+    name: str
+    beam_width: int
+    position_step: int
+    clusters: int
+    change_penalty: float   # ΔE equivalente per cambio colore
+    refine_rounds: int
+
+    @classmethod
+    def get(cls, name: str) -> "QualityProfile":
+        return QUALITY[name]
+
+
+QUALITY = {
+    "massima": QualityProfile("massima", 10, 1, 96, 0.0, 4),
+    "bilanciata": QualityProfile("bilanciata", 6, 2, 64, 0.15, 2),
+    "veloce": QualityProfile("veloce", 3, 3, 32, 0.4, 1),
+}
+
+
+@dataclass
+class LayerPlan:
+    """Geometria degli strati: spessori e numero di strati della base."""
+    first_layer_mm: float
+    layer_mm: float
+    base_layers: int
+    max_layers: int
+
+    @property
+    def heights(self) -> np.ndarray:
+        h = np.full(self.max_layers, self.layer_mm)
+        h[0] = self.first_layer_mm
+        return h
+
+    def z_of_level(self, level: np.ndarray | int) -> np.ndarray:
+        level = np.asarray(level, dtype=float)
+        return np.where(level <= 0, 0.0, self.first_layer_mm + (level - 1) * self.layer_mm)
+
+    @classmethod
+    def from_settings(cls, first, layer, base_mm, max_mm) -> "LayerPlan":
+        base = max(1, int(round((base_mm - first) / layer)) + 1)
+        top = int(round((max_mm - first) / layer)) + 1
+        if top <= base:
+            raise ValueError("Spessore massimo inferiore o uguale alla base")
+        return cls(first, layer, base, top)
+
+
+@dataclass
+class Solution:
+    sequence: list[tuple[str, int]]  # (filamento, strato iniziale 0-based)
+    score: float
+    mean_de: float
+    lut_lin: np.ndarray = field(repr=False, default=None)
+    lut_lab: np.ndarray = field(repr=False, default=None)
+
+    @property
+    def filaments(self) -> list[str]:
+        return [f for f, _ in self.sequence]
+
+    @property
+    def changes(self) -> int:
+        return len(self.sequence) - 1
+
+
+def representative_colors(lab_pixels: np.ndarray, k: int, seed: int = 0):
+    """k colori rappresentativi (CIELAB) con pesi; deterministico."""
+    x = lab_pixels.reshape(-1, 3)
+    rng = np.random.default_rng(seed)
+    if len(x) > 40000:
+        x = x[rng.choice(len(x), 40000, replace=False)]
+    k = min(k, len(np.unique(np.round(x, 1), axis=0)))
+    cent, lbl = kmeans2(x, k, minit="++", seed=seed, iter=20)
+    w = np.bincount(lbl, minlength=k).astype(float)
+    keep = w > 0
+    return cent[keep], w[keep] / w.sum()
+
+
+class Evaluator:
+    def __init__(self, model: OpticalModel, plan: LayerPlan, targets: np.ndarray,
+                 weights: np.ndarray, change_penalty: float):
+        self.model, self.plan = model, plan
+        self.targets, self.weights = targets, weights
+        self.penalty = change_penalty
+        self.cache: dict[tuple, Solution] = {}
+        self.evaluations = 0
+
+    def layer_fids(self, seq) -> list[str]:
+        fids = []
+        for i, (f, start) in enumerate(seq):
+            end = seq[i + 1][1] if i + 1 < len(seq) else self.plan.max_layers
+            fids += [f] * (end - start)
+        return fids
+
+    def evaluate(self, seq) -> Solution:
+        key = tuple(seq)
+        if key in self.cache:
+            return self.cache[key]
+        self.evaluations += 1
+        lut = self.model.stack_lut(self.layer_fids(seq), self.plan.heights)
+        lab = linear_to_lab(lut)
+        cand = lab[self.plan.base_layers:]  # quote ammesse
+        de = delta_e2000(self.targets[:, None, :], cand[None, :, :])
+        mean_de = float(np.sum(self.weights * de.min(axis=1)))
+        sol = Solution(list(seq), mean_de + self.penalty * (len(seq) - 1), mean_de, lut, lab)
+        self.cache[key] = sol
+        return sol
+
+
+def optimize(model: OpticalModel, plan: LayerPlan, target_lab: np.ndarray,
+             filament_ids: list[str], max_colors: int, quality: QualityProfile,
+             progress: Callable[[float, str], None] | None = None,
+             cancelled: Callable[[], bool] | None = None,
+             seed: int = 0) -> tuple[Solution, list[Solution], Evaluator]:
+    """Ritorna (migliore, candidate migliori distinte, valutatore)."""
+    targets, weights = representative_colors(target_lab, quality.clusters, seed)
+    ev = Evaluator(model, plan, targets, weights, quality.change_penalty)
+    progress = progress or (lambda p, m: None)
+    cancelled = cancelled or (lambda: False)
+    max_colors = max(1, min(max_colors, len(filament_ids)))
+
+    beam = sorted((ev.evaluate([(f, 0)]) for f in filament_ids), key=lambda s: s.score)
+    pool = list(beam)
+    beam = beam[:quality.beam_width]
+    for depth in range(1, max_colors):
+        if cancelled():
+            break
+        progress(0.1 + 0.6 * depth / max_colors, f"Ricerca combinazioni: {depth + 1} colori")
+        nxt = []
+        for sol in beam:
+            last_f, last_s = sol.sequence[-1]
+            lo = max(plan.base_layers, last_s + 1)
+            for start in range(lo, plan.max_layers, quality.position_step):
+                for f in filament_ids:
+                    if f != last_f:
+                        nxt.append(ev.evaluate(sol.sequence + [(f, start)]))
+        if not nxt:
+            break
+        uniq = {tuple(s.sequence): s for s in nxt}
+        nxt = sorted(uniq.values(), key=lambda s: s.score)
+        pool += nxt[:quality.beam_width * 3]
+        beam = nxt[:quality.beam_width]
+
+    pool = sorted({tuple(s.sequence): s for s in pool}.values(), key=lambda s: s.score)
+    best = pool[0]
+    progress(0.75, "Affinamento quote e filamenti")
+    for _ in range(quality.refine_rounds):
+        if cancelled():
+            break
+        improved = False
+        for i in range(len(best.sequence)):
+            for cand in _neighbours(best.sequence, i, filament_ids, plan):
+                s = ev.evaluate(cand)
+                if s.score < best.score - 1e-6:
+                    best, improved = s, True
+        if not improved:
+            break
+    pool = sorted({tuple(s.sequence): s for s in pool + [best]}.values(), key=lambda s: s.score)
+    return best, pool[:8], ev
+
+
+def _neighbours(seq, i, fids, plan):
+    f, s = seq[i]
+    out = []
+    if i > 0:
+        lo = max(plan.base_layers, seq[i - 1][1] + 1)
+        hi = seq[i + 1][1] - 1 if i + 1 < len(seq) else plan.max_layers - 1
+        for d in (-3, -2, -1, 1, 2, 3):
+            if lo <= s + d <= hi:
+                out.append(seq[:i] + [(f, s + d)] + seq[i + 1:])
+    for g in fids:
+        if g != f and (i == 0 or seq[i - 1][0] != g) and (i + 1 >= len(seq) or seq[i + 1][0] != g):
+            out.append(seq[:i] + [(g, s)] + seq[i + 1:])
+    return out

@@ -1,0 +1,55 @@
+import numpy as np
+import pytest
+from PIL import Image
+
+from colorforge.geometry.mesh import validate
+from colorforge.imaging.importer import ImageImportError, from_pil, load_image
+from colorforge.pipeline import JobSettings, export_all, run
+from tests.conftest import make_image
+
+FIDS = ["generic-pla-black", "generic-pla-white", "generic-pla-red", "generic-pla-blue", "generic-pla-yellow"]
+
+
+def settings(**kw):
+    d = dict(filament_ids=FIDS, width_mm=30, pixel_mm=0.5, max_colors=4, quality="veloce")
+    d.update(kw)
+    return JobSettings(**d)
+
+
+@pytest.mark.parametrize("kind", ["gradient", "bw", "saturated", "many"])
+def test_full_pipeline(db, kind, tmp_path):
+    res = run(make_image(kind), db, settings())
+    s = res.settings
+    assert res.mesh_problems == []
+    assert res.levels.min() >= res.plan.base_layers and res.levels.max() <= res.plan.max_layers
+    assert res.levels.shape == (40, 60) or res.levels.shape[1] == 60
+    assert res.metrics["tipo"].startswith("previsione")
+    assert res.reliability < 0.5 and any("TD sconosciuta" in w for w in res.warnings)
+    assert len({f for f in res.solution.filaments}) <= s.max_colors
+    files = export_all(res, tmp_path)
+    assert all(__import__("os").path.getsize(p) > 0 for p in files.values())
+
+
+def test_gradient_black_white_is_accurate(db):
+    res = run(make_image("gradient"), db, settings(filament_ids=FIDS[:2], quality="bilanciata"))
+    assert res.metrics["delta_e2000_medio"] < 6
+
+
+def test_repeatable(db):
+    a = run(make_image("many"), db, settings())
+    b = run(make_image("many"), db, settings())
+    assert a.solution.sequence == b.solution.sequence and np.array_equal(a.levels, b.levels)
+
+
+def test_too_large_for_printer(db):
+    with pytest.raises(ValueError, match="volume"):
+        run(make_image("bw"), db, settings(width_mm=400))
+
+
+def test_transparency_and_bad_file(tmp_path):
+    a = np.zeros((10, 10, 4), np.uint8); a[..., 3] = 0; a[:5, :, 3] = 255
+    img = from_pil(Image.fromarray(a, "RGBA"))
+    assert img.alpha is not None and img.alpha.min() == 0
+    bad = tmp_path / "rotta.png"; bad.write_bytes(b"non un png")
+    with pytest.raises(ImageImportError):
+        load_image(bad)
