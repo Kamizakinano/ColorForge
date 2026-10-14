@@ -2,11 +2,11 @@
 
 Ogni fascia (intervallo di quote stampato con un filamento) è un oggetto
 separato, chiuso, con il proprio materiale `basematerials` e il colore di
-visualizzazione. Per Bambu Studio viene aggiunto `Metadata/model_settings.config`
-con l'estrusore (slot AMS) di ciascun oggetto.
+visualizzazione. Lo slot AMS è nel nome dell'oggetto ("slot N").
 
-ATTENZIONE: la compatibilità con Bambu Studio 2.8.2.60 non è ancora stata
-verificata aprendo il file nello slicer. In alternativa resta sempre valido
+Nota: Bambu Studio 2.8.2.60 rifiuta un `Metadata/model_settings.config`
+scritto da terzi ("configurazione non valida"), quindi non viene più
+generato: il file è un 3MF standard (solo geometria + materiali base). In alternativa resta sempre valido
 il flusso STL singolo + cambi colore alle quote indicate nel report.
 """
 from __future__ import annotations
@@ -71,7 +71,6 @@ def write_3mf(parts: list[tuple[str, str, int, Mesh]], path: str | Path,
         z.writestr("[Content_Types].xml", CONTENT_TYPES)
         z.writestr("_rels/.rels", RELS)
         z.writestr("3D/3dmodel.model", model)
-        z.writestr("Metadata/model_settings.config", settings)
 
 
 def read_3mf_meshes(path: str | Path) -> list[tuple[str, np.ndarray, np.ndarray]]:

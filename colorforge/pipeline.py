@@ -232,7 +232,7 @@ def band_meshes(res: JobResult) -> list[tuple[str, str, int, Mesh, dict]]:
         if rel.max() <= 0:
             continue
         m = column_mesh(rel, res.settings.pixel_mm, res.plan.z_of_level, level_offset=a)
-        out.append((f"{i + 1:02d} {sw['filamento']}", sw["colore"], int(sw["slot"]), m, sw))
+        out.append((f"{i + 1:02d} slot {sw['slot']} - {sw['filamento']}", sw["colore"], int(sw["slot"]), m, sw))
     return out
 
 
@@ -300,8 +300,10 @@ def report_text(r: dict) -> str:
               "  Importa il file .stl in Bambu Studio, assegna il primo filamento e aggiungi un",
               "  cambio filamento (tasto destro sulla barra degli strati) all'inizio di ogni strato",
               "  indicato sopra, scegliendo lo slot corrispondente.",
-              "", "METODO B - 3MF multi-oggetto (da verificare con la tua versione di Bambu Studio):",
-              "  Il file .3mf contiene un oggetto per ogni fascia di colore con lo slot già assegnato.",
+              "", "METODO B - 3MF multi-oggetto:",
+              "  Il file .3mf contiene un oggetto per ogni fascia di colore. All'apertura rispondi 'Sì'",
+              "  alla domanda 'caricare come singolo oggetto con più parti', poi assegna a ogni parte",
+              "  lo slot indicato nel suo nome (es. '02 slot 2 - ...').",
               "", "QUALITÀ PREVISTA (simulazione, non misura reale):"]
     m = r["metriche_previste"]
     lines.append(f"  ΔE2000 medio {m['delta_e2000_medio']:.2f}, 95° percentile {m['delta_e2000_p95']:.2f}, "
