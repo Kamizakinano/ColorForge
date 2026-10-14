@@ -6,6 +6,9 @@ from pathlib import Path
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
+        from colorforge.selftest import run_selftest
+        return run_selftest(sys.argv[2] if len(sys.argv) > 2 else None)
     log_dir = Path(os.environ.get("APPDATA") or Path.home() / ".config") / "ColorForge"
     log_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(filename=log_dir / "colorforge.log", level=logging.INFO,
