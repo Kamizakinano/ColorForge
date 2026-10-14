@@ -7,12 +7,12 @@
       "id": "bambu-x2d",
       "name": "Bambu Lab X2D",
       "build_volume_mm": [
-        235.5,
         256,
-        256
+        256,
+        260
       ],
       "nozzle_mm": 0.4,
-      "build_volume_note": "Volume a doppio ugello (235.5x256x256), conservativo: con 8 colori su due AMS si usano entrambi gli ugelli. Ugello principale singolo: 256x256x260.",
+      "build_volume_note": "Ugello principale singolo: 256x256x260 (8 colori dai due AMS 2 Pro sull'ugello principale, confermato dall'utente). Doppio ugello: 235.5x256x256.",
       "changers": [
         {
           "id": "ams2pro-x2",
