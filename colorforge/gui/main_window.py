@@ -11,7 +11,7 @@ from PySide6.QtGui import QAction, QDesktopServices, QImage, QPixmap
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView,
                                QGroupBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
-                               QMainWindow, QMessageBox, QProgressBar, QPushButton, QSpinBox,
+                               QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSpinBox,
                                QSplitter, QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 
 from colorforge.color.spaces import srgb_to_hex
@@ -145,7 +145,7 @@ class MainWindow(QMainWindow):
         f = QFormLayout(g)
         self.sp_width = QDoubleSpinBox(); self.sp_width.setRange(10, 400); self.sp_width.setValue(100); self.sp_width.setSuffix(" mm")
         self.lb_height = QLabel("-")
-        self.sp_pixel = QDoubleSpinBox(); self.sp_pixel.setRange(0.1, 2); self.sp_pixel.setSingleStep(0.05); self.sp_pixel.setValue(0.3); self.sp_pixel.setSuffix(" mm")
+        self.sp_pixel = QDoubleSpinBox(); self.sp_pixel.setRange(0.1, 2); self.sp_pixel.setSingleStep(0.05); self.sp_pixel.setValue(0.4); self.sp_pixel.setSuffix(" mm")
         self.sp_layer = QDoubleSpinBox(); self.sp_layer.setRange(0.04, 0.32); self.sp_layer.setSingleStep(0.02); self.sp_layer.setValue(0.08); self.sp_layer.setSuffix(" mm")
         self.sp_base = QDoubleSpinBox(); self.sp_base.setRange(0.2, 5); self.sp_base.setValue(0.64); self.sp_base.setSuffix(" mm")
         self.sp_max = QDoubleSpinBox(); self.sp_max.setRange(0.5, 10); self.sp_max.setValue(2.4); self.sp_max.setSuffix(" mm")
@@ -153,17 +153,26 @@ class MainWindow(QMainWindow):
         self.cb_quality = QComboBox()
         for lbl, k in QUALITY_LABELS:
             self.cb_quality.addItem(lbl, k)
+        self.cb_mode = QComboBox()
+        self.cb_mode.addItem("Multicolore per zona (AMS)", "zone")
+        self.cb_mode.addItem("Cambi per strato (stile HueForge)", "layers")
+        self.cb_mode.setToolTip("Per zona: filamenti diversi nello stesso strato, molto più fedele ma con più "
+                                "cambi filamento.\nPer strato: un colore per strato su tutto il pannello, "
+                                "pochi cambi, colori limitati.")
+        self.cb_mode.currentIndexChanged.connect(lambda _i: self._palette_changed())
         self.sp_width.valueChanged.connect(self._update_height)
         for lbl, w in (("Larghezza", self.sp_width), ("Altezza (auto)", self.lb_height),
                        ("Risoluzione", self.sp_pixel), ("Altezza strato", self.sp_layer),
                        ("Spessore base", self.sp_base), ("Spessore massimo", self.sp_max),
-                       ("Colori massimi", self.sp_colors), ("Qualità", self.cb_quality)):
+                       ("Colori massimi", self.sp_colors), ("Modalità colore", self.cb_mode),
+                       ("Qualità", self.cb_quality)):
             f.addRow(lbl, w)
         sl.addWidget(g)
 
         g = QGroupBox("Filamenti disponibili")
         v = QVBoxLayout(g)
         self.lst_fil = QListWidget()
+        self.lst_fil.setMinimumHeight(110)
         v.addWidget(self.lst_fil)
         b = QPushButton("🎨  I miei filamenti…")
         b.clicked.connect(self.edit_filaments)
@@ -222,9 +231,15 @@ class MainWindow(QMainWindow):
         right = QSplitter(Qt.Orientation.Vertical)
         right.addWidget(self.tabs)
         right.addWidget(self.txt)
-        right.setSizes([600, 240])
+        right.setSizes([620, 200])
+        self.txt.setMinimumHeight(60)
+        scroll = QScrollArea()
+        scroll.setWidget(side)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setMinimumWidth(340)
         split = QSplitter()
-        split.addWidget(side)
+        split.addWidget(scroll)
         split.addWidget(right)
         split.setSizes([360, 1040])
         self.setCentralWidget(split)
@@ -283,7 +298,8 @@ class MainWindow(QMainWindow):
         s = JobSettings(printer_id=self.cb_printer.currentData(), changer_id=self.cb_changer.currentData(),
                         filament_ids=fids if fids is not None else self.selected_filaments(), slots=dict(self.slots),
                         width_mm=self.sp_width.value(), pixel_mm=self.sp_pixel.value(),
-                        max_colors=self.sp_colors.value(), quality=self.cb_quality.currentData())
+                        max_colors=self.sp_colors.value(), quality=self.cb_quality.currentData(),
+                        mode=self.cb_mode.currentData())
         s.print.layer_height_mm = self.sp_layer.value()
         s.print.first_layer_height_mm = max(self.sp_layer.value(), 0.16)
         s.print.base_thickness_mm = self.sp_base.value()
@@ -431,11 +447,13 @@ class MainWindow(QMainWindow):
         html = [f"<h3>Risultato previsto (simulazione, non garanzia del risultato fisico)</h3>",
                 f"<p>ΔE2000 medio <b>{m['delta_e2000_medio']:.2f}</b> · 95° percentile {m['delta_e2000_p95']:.2f} · "
                 f"SSIM {m['ssim_luminanza']:.3f} · affidabilità dati <b>{res.reliability:.2f}</b></p>",
-                "<p><b>Sequenza filamenti (dal basso):</b></p><ol>"]
+                ("<p><b>Filamenti usati (multicolore per zona) — assegna ogni parte del 3MF allo slot indicato:</b></p><ol>"
+                 if res.zone is not None else "<p><b>Sequenza filamenti (dal basso):</b></p><ol>")]
         for sw in res.swaps:
+            where = ("base del pannello" if sw.get("ruolo") == "base" else "nelle zone") if res.zone is not None \
+                else f"dallo strato {sw['strato_inizio']} (z={sw['z_inizio_mm']} mm)"
             html.append(f"<li><span style='background:{sw['colore']}'>&nbsp;&nbsp;&nbsp;&nbsp;</span> "
-                        f"{sw['filamento']} — slot {sw['slot']} — dallo strato {sw['strato_inizio']} "
-                        f"(z={sw['z_inizio_mm']} mm)</li>")
+                        f"{sw['filamento']} — slot {sw['slot']} — {where}</li>")
         e = r["stima_stampa"]
         html.append(f"</ol><p>Altezza {e['altezza_totale_mm']} mm · {e['numero_strati']} strati · "
                     f"{e['cambi_colore']} cambi · ~{e['tempo_min_stimato']:.0f} min (stima)</p>")

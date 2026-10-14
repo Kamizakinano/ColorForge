@@ -38,9 +38,21 @@ Obiettivo: ΔE00 medio pesato su 32–96 colori rappresentativi (k-means in Lab)
 penalità per cambio (dipende dalla qualità). Il risultato è deterministico a
 parità di input (seed fisso).
 
+## Modalità multicolore per zona (predefinita con AMS)
+
+Ogni colonna di pixel è una ricetta: base comune (filamento più chiaro) + filamento
+medio per *a* strati + filamento superiore per *b* strati. Il colore della ricetta si
+calcola con lo stack KM. Per ogni pixel si sceglie la ricetta con ΔE00 minimo
+(kd-tree in Lab + rifinitura CIEDE2000). I filamenti (≤ capacità AMS) si scelgono
+in modo greedy. Gli oggetti 3MF sono uno per (ruolo, filamento). `interval_mesh` è
+una superficie di voxel con vertici sdoppiati agli spigoli non-manifold, quindi è
+sempre chiusa e 2-manifold. Il prezzo è un numero alto di cambi filamento, che il
+report stima.
+
 ## Stato
 
-**Completato (prototipo eseguibile, 23 test automatici)**
+**Completato (prototipo eseguibile, 31 test automatici)**
+- Modalità multicolore per zona (AMS), tavolozza dei colori dell'immagine con anteprima automatica
 - Import foto, analisi, preparazione adattiva
 - Database filamenti con inserimento manuale da interfaccia
 - Modello ottico KM, ricerca automatica, mappa quote, mesh validata

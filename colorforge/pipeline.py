@@ -45,6 +45,8 @@ class JobSettings:
     prep: PrepOptions = field(default_factory=PrepOptions)
     background_reflectance: float = 0.0
     seed: int = 0
+    # "zone": filamenti diversi nello stesso strato (AMS); "layers": cambi per strato (HueForge)
+    mode: str = "zone"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -79,6 +81,8 @@ class JobResult:
     swaps: list[dict]
     mesh_problems: list[str]
     elapsed_s: float
+    zone: dict | None = None   # modalità per zona: {"recipes": RecipeSet, "idx": array}
+    objects: dict | None = field(default=None, repr=False)  # mesh per oggetto (cache export)
 
     def error_map_rgb(self, vmax: float = 20.0) -> np.ndarray:
         t = np.clip(self.error_de / vmax, 0, 1)[..., None]
@@ -143,6 +147,9 @@ def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
                                    ps.base_thickness_mm, ps.max_thickness_mm)
     quality = QualityProfile.get(s.quality)
     check()
+    if s.mode == "zone":
+        return _run_zone(image, db, s, model, plan, target_lab, prepared, max_colors, changer,
+                         warnings, log, progress, check, t0)
     best, cands, ev = optimize(model, plan, target_lab, s.filament_ids, max_colors, quality,
                                progress=progress, cancelled=cancelled, seed=s.seed)
     check()
@@ -186,6 +193,91 @@ def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
                      warnings, log, metrics, estimate, swaps, problems, time.time() - t0)
 
 
+def _run_zone(image, db, s, model, plan, target_lab, prepared, max_colors, changer,
+              warnings, log, progress, check, t0) -> JobResult:
+    from colorforge.optimize.regional import (build_objects, build_recipes, choose_filaments,
+                                              clean_recipes, nearest_recipes)
+    progress(0.15, "Scelta dei filamenti")
+    chosen, _ = choose_filaments(model, plan, target_lab, s.filament_ids, max_colors,
+                                 progress=progress, seed=s.seed)
+    check()
+    progress(0.72, "Calcolo delle combinazioni di strati")
+    rs = build_recipes(model, plan, chosen, 0, step=1 if s.quality == "massima" else 2)
+    progress(0.78, "Assegnazione dei colori per zona")
+    idx, _ = nearest_recipes(target_lab, rs)
+    idx, nclean, _ = clean_recipes(idx, rs, plan.base_layers, target_lab)
+    check()
+    log.append(f"Multicolore per zona: {len(rs)} combinazioni di strati con {len(chosen)} filamenti; "
+               f"{nclean} pixel isolati uniti ai vicini.")
+    levels = plan.base_layers + rs.a[idx] + rs.b[idx]
+    sim_lab = rs.lab[idx]
+    err = delta_e2000(target_lab, sim_lab)
+    simulated = linear_to_srgb(rs.lin[idx])
+    progress(0.85, "Costruzione e verifica della geometria")
+    objects = build_objects(rs, idx, plan, s.pixel_mm)
+    problems = [f"{k[1]} ({k[0]}): {p}" for k, m in objects.items() for p in validate(m)]
+    ssim = float(structural_similarity(target_lab[..., 0], sim_lab[..., 0], data_range=100))
+    metrics = {
+        "delta_e2000_medio": float(err.mean()), "delta_e2000_mediana": float(np.median(err)),
+        "delta_e2000_p95": float(np.percentile(err, 95)),
+        "percentuale_pixel_dE_sopra_10": float((err > 10).mean() * 100), "ssim_luminanza": ssim,
+        "tipo": "previsione del modello ottico, NON misura su stampa reale",
+    }
+    reliability = model.reliability(chosen)
+    if reliability < 0.5:
+        warnings.append(f"Affidabilità della previsione bassa ({reliability:.2f}): i dati ottici dei "
+                        "filamenti sono stimati. Calibrare i filamenti per previsioni attendibili.")
+    sol = Solution([(f, 0) for f in chosen], float(err.mean()), float(err.mean()))
+    slots = {}
+    for f in chosen:
+        slots[f] = s.slots.get(f) or len(slots) + 1
+    swaps = []
+    px2 = s.pixel_mm ** 2
+    zl = plan.z_of_level
+    vols = {}
+    for (role, f), m in objects.items():
+        vols[f] = vols.get(f, 0.0) + m.volume
+    for i, f in enumerate(chosen):
+        fl = db.get(f)
+        swaps.append({"ordine": i + 1, "filamento": fl.label, "id": f, "colore": srgb_to_hex(fl.srgb),
+                      "slot": slots[f], "ruolo": "base" if i == 0 else "zona",
+                      "strato_inizio": 1 if i == 0 else plan.base_layers + 1,
+                      "z_inizio_mm": 0.0 if i == 0 else round(float(zl(plan.base_layers)), 3),
+                      "z_fine_mm": round(float(zl(plan.max_layers)), 3)})
+    # cambi filamento: per ogni strato, numero di filamenti presenti
+    top = int(levels.max())
+    fa, a, fb, b = rs.fa[idx], rs.a[idx], rs.fb[idx], rs.b[idx]
+    B = plan.base_layers
+    changes = 0
+    prev_last = None
+    for l in range(B, top):
+        rel = l - B
+        f_here = np.where(rel < a, fa, np.where(rel < a + b, fb, -2))
+        present = set(np.unique(f_here[(levels > l)]).tolist()) - {-2, -1}
+        n = len(present)
+        if n:
+            changes += n - 1 + (1 if prev_last is not None and prev_last not in present else 0)
+            prev_last = max(present)
+    volume = sum(vols.values())
+    estimate = {
+        "nota": "Stime approssimative: verificare con lo slicer.",
+        "altezza_totale_mm": round(float(zl(top)), 3), "numero_strati": top,
+        "cambi_colore": int(changes), "volume_mm3": round(volume, 1),
+        "filamento_g": {db.get(f).label: round(v * db.get(f).density_g_cm3 / 1000, 2) for f, v in vols.items()},
+        "spurgo_g_stimato": round(0.3 * changes, 1),
+        "ipotesi_spurgo": "0.3 g per cambio (ipotesi; dipende da spurgo, torre e doppio ugello)",
+        "tempo_min_stimato": round(volume / 8.0 / 60 + top * 0.25 + 1.5 * changes, 0),
+        "ipotesi_tempo": "flusso medio 8 mm³/s, 15 s per strato, 90 s per cambio filamento",
+    }
+    if changes > 60:
+        warnings.append(f"Circa {changes} cambi filamento: stampa lunga e molto spurgo. "
+                        "Riduci 'Colori massimi' o usa la modalità 'Cambi per strato' per stampe più rapide.")
+    res = JobResult(s, plan, sol, [sol], image.srgb, prepared, levels, simulated, err, reliability,
+                    warnings, log, metrics, estimate, swaps, problems, time.time() - t0,
+                    zone={"recipes": rs, "idx": idx}, objects=objects)
+    return res
+
+
 def _swaps_and_estimate(sol: Solution, plan: LayerPlan, levels, s: JobSettings, db, mesh: Mesh):
     px2 = s.pixel_mm ** 2
     swaps, est_mass = [], {}
@@ -222,8 +314,18 @@ def _swaps_and_estimate(sol: Solution, plan: LayerPlan, levels, s: JobSettings, 
 
 
 def band_meshes(res: JobResult) -> list[tuple[str, str, int, Mesh, dict]]:
-    """Una mesh chiusa per ogni fascia di filamento (per 3MF multi-materiale)."""
+    """Una mesh chiusa per ogni fascia (cambi per strato) o per ogni
+    (ruolo, filamento) (multicolore per zona), per il 3MF multi-materiale."""
     out = []
+    if res.zone is not None:
+        from colorforge.optimize.regional import build_objects
+        objs = res.objects or build_objects(res.zone["recipes"], res.zone["idx"], res.plan, res.settings.pixel_mm)
+        by_id = {sw["id"]: sw for sw in res.swaps}
+        order = {"base": 0, "medio": 1, "sopra": 2}
+        for (role, f), m in sorted(objs.items(), key=lambda kv: (order[kv[0][0]], by_id[kv[0][1]]["slot"])):
+            sw = by_id[f]
+            out.append((f"slot {sw['slot']} - {sw['filamento']} ({role})", sw["colore"], int(sw["slot"]), m, sw))
+        return out
     seq = res.solution.sequence
     for i, sw in enumerate(res.swaps):
         a = seq[i][1]
@@ -299,7 +401,7 @@ def build_report(res: JobResult, band_problems: dict | None = None) -> dict:
     s = res.settings
     return {
         "applicazione": f"ColorForge AI {__version__}",
-        "stampante": s.printer_id, "sistema_cambio": s.changer_id,
+        "stampante": s.printer_id, "sistema_cambio": s.changer_id, "modalita": s.mode,
         "dimensioni_mm": [round(res.levels.shape[1] * s.pixel_mm, 2), round(res.levels.shape[0] * s.pixel_mm, 2)],
         "risoluzione_mm": s.pixel_mm, "qualita": s.quality,
         "altezza_strato_mm": s.print.layer_height_mm, "primo_strato_mm": s.print.first_layer_height_mm,
@@ -318,13 +420,30 @@ def build_report(res: JobResult, band_problems: dict | None = None) -> dict:
 
 def report_text(r: dict) -> str:
     lines = ["COLORFORGE AI - ISTRUZIONI DI STAMPA", "",
+             "Modalità: " + ("multicolore per zona (AMS)" if r.get("modalita") == "zone" else "cambi per strato"),
              f"Dimensioni: {r['dimensioni_mm'][0]} x {r['dimensioni_mm'][1]} mm, "
              f"altezza strato {r['altezza_strato_mm']} mm (primo strato {r['primo_strato_mm']} mm)",
              f"Altezza totale: {r['stima_stampa']['altezza_totale_mm']} mm, {r['stima_stampa']['numero_strati']} strati",
-             "", "SEQUENZA FILAMENTI (dal basso verso l'alto):"]
+             "", "FILAMENTI:" if r.get("modalita") == "zone" else "SEQUENZA FILAMENTI (dal basso verso l'alto):"]
     for sw in r["sequenza_filamenti"]:
         lines.append(f"  {sw['ordine']}. {sw['filamento']} ({sw['colore']}) slot {sw['slot']}: "
                      f"dallo strato {sw['strato_inizio']} (z = {sw['z_inizio_mm']} mm)")
+    if r.get("modalita") == "zone":
+        lines += ["", "MODALITÀ MULTICOLORE PER ZONA (AMS):",
+                  "  1. Apri il file .3mf in Bambu Studio e rispondi 'Sì' a 'caricare come singolo oggetto",
+                  "     con più parti'.",
+                  "  2. Nell'elenco oggetti assegna a ogni parte lo slot scritto nel suo nome",
+                  "     (es. 'slot 3 - ...'). Più parti possono avere lo stesso slot.",
+                  "  3. Il file .stl contiene solo la forma: in questa modalità serve il 3MF.",
+                  "", "QUALITÀ PREVISTA (simulazione, non misura reale):"]
+        m = r["metriche_previste"]
+        lines.append(f"  ΔE2000 medio {m['delta_e2000_medio']:.2f}, 95° percentile {m['delta_e2000_p95']:.2f}, "
+                     f"SSIM luminanza {m['ssim_luminanza']:.3f}")
+        lines.append(f"  Cambi filamento stimati: {r['stima_stampa']['cambi_colore']}, "
+                     f"tempo ~{r['stima_stampa']['tempo_min_stimato']:.0f} min (stima)")
+        if r["avvisi"]:
+            lines += ["", "AVVISI:"] + [f"  - {w}" for w in r["avvisi"]]
+        return "\n".join(lines) + "\n"
     lines += ["", "METODO A - STL singolo (consigliato, sempre valido):",
               "  Importa il file .stl in Bambu Studio, assegna il primo filamento e aggiungi un",
               "  cambio filamento (tasto destro sulla barra degli strati) all'inizio di ogni strato",

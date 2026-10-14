@@ -63,9 +63,16 @@ def save_project(path: str | Path, res: JobResult, db: FilamentDatabase, history
         z.writestr("prepared.png", _png(res.prepared_srgb))
         z.writestr("simulated.png", _png(res.simulated_srgb))
         z.writestr("levels.npy", _npy(res.levels))
-        z.writestr("lut_lin.npy", _npy(res.solution.lut_lin))
-        z.writestr("lut_lab.npy", _npy(res.solution.lut_lab))
+        if res.solution.lut_lin is not None:
+            z.writestr("lut_lin.npy", _npy(res.solution.lut_lin))
+            z.writestr("lut_lab.npy", _npy(res.solution.lut_lab))
         z.writestr("error_de.npy", _npy(res.error_de.astype(np.float32)))
+        if res.zone is not None:
+            rs = res.zone["recipes"]
+            z.writestr("zone.json", json.dumps({"fids": rs.fids, "base": rs.base}))
+            for k in ("fa", "a", "fb", "b", "lin", "lab"):
+                z.writestr(f"zone_{k}.npy", _npy(getattr(rs, k)))
+            z.writestr("zone_idx.npy", _npy(res.zone["idx"]))
     if path.exists():  # mai sovrascrivere senza copia
         os.replace(path, path.with_suffix(path.suffix + ".bak"))
     os.replace(tmp, path)
@@ -95,10 +102,18 @@ def load_project(path: str | Path) -> tuple[JobResult, FilamentDatabase]:
         img = lambda n: np.asarray(Image.open(io.BytesIO(z.read(n))).convert("RGB"), dtype=float) / 255
         npy = lambda n: np.load(io.BytesIO(z.read(n)), allow_pickle=False)
         seq = [tuple(x) for x in r["sequence"]]
-        sol = Solution(seq, r["score"], r["mean_de"], npy("lut_lin.npy"), npy("lut_lab.npy"))
+        names = set(z.namelist())
+        lut = lambda n: npy(n) if n in names else None
+        sol = Solution(seq, r["score"], r["mean_de"], lut("lut_lin.npy"), lut("lut_lab.npy"))
+        zone = None
+        if "zone.json" in names:
+            from colorforge.optimize.regional import RecipeSet
+            zj = json.loads(z.read("zone.json"))
+            rs = RecipeSet(zj["fids"], zj["base"], *(npy(f"zone_{k}.npy") for k in ("fa", "a", "fb", "b", "lin", "lab")))
+            zone = {"recipes": rs, "idx": npy("zone_idx.npy")}
         cands = [Solution([tuple(x) for x in c["sequence"]], c["score"], c["mean_de"]) for c in r["candidates"]]
         res = JobResult(settings, LayerPlan(**r["plan"]), sol, cands, img("original.png"), img("prepared.png"),
                         npy("levels.npy"), img("simulated.png"), npy("error_de.npy").astype(float),
                         r["reliability"], r["warnings"], r["log"], r["metrics"], r["estimate"], r["swaps"],
-                        r["mesh_problems"], r["elapsed_s"])
+                        r["mesh_problems"], r["elapsed_s"], zone=zone)
     return res, fdb

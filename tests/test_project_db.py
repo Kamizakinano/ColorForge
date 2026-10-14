@@ -8,8 +8,9 @@ from colorforge.project.session import load_project, save_project
 from tests.conftest import make_image
 
 
-def test_project_roundtrip(db, tmp_path):
-    s = JobSettings(filament_ids=["generic-pla-black", "generic-pla-white"], width_mm=20, pixel_mm=0.5,
+@pytest.mark.parametrize("mode", ["zone", "layers"])
+def test_project_roundtrip(db, tmp_path, mode):
+    s = JobSettings(mode=mode, filament_ids=["generic-pla-black", "generic-pla-white"], width_mm=20, pixel_mm=0.5,
                     max_colors=2, quality="veloce")
     res = run(make_image("gradient"), db, s)
     p = tmp_path / "p.cfproj"

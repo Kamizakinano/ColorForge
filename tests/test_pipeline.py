@@ -16,9 +16,10 @@ def settings(**kw):
     return JobSettings(**d)
 
 
+@pytest.mark.parametrize("mode", ["zone", "layers"])
 @pytest.mark.parametrize("kind", ["gradient", "bw", "saturated", "many"])
-def test_full_pipeline(db, kind, tmp_path):
-    res = run(make_image(kind), db, settings())
+def test_full_pipeline(db, kind, mode, tmp_path):
+    res = run(make_image(kind), db, settings(mode=mode))
     s = res.settings
     assert res.mesh_problems == []
     assert res.levels.min() >= res.plan.base_layers and res.levels.max() <= res.plan.max_layers
@@ -28,6 +29,15 @@ def test_full_pipeline(db, kind, tmp_path):
     assert len({f for f in res.solution.filaments}) <= s.max_colors
     files = export_all(res, tmp_path)
     assert all(__import__("os").path.getsize(p) > 0 for p in files.values())
+
+
+def test_zone_mode_reproduces_distinct_colors(db):
+    """Rosso, verde e blu affiancati: per zona devono uscire tutti, a strati no."""
+    fids = ["generic-pla-white", "generic-pla-red", "generic-pla-green", "generic-pla-blue"]
+    z = run(make_image("saturated"), db, settings(filament_ids=fids, mode="zone"))
+    l = run(make_image("saturated"), db, settings(filament_ids=fids, mode="layers"))
+    assert z.metrics["delta_e2000_medio"] < l.metrics["delta_e2000_medio"]
+    assert z.mesh_problems == [] and len(z.objects) >= 3
 
 
 def test_gradient_black_white_is_accurate(db):
