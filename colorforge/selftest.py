@@ -72,7 +72,8 @@ def run_selftest(out_dir: str | None = None) -> int:
     ok = all(c["ok"] for c in report["checks"])
     report["ok"] = ok
     (out / "selftest_report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), "utf-8")
-    print(json.dumps(report, indent=2, ensure_ascii=False))
+    if sys.stdout is not None:  # nell'exe "windowed" non c'è console
+        print(json.dumps(report, indent=2, ensure_ascii=False))
     return 0 if ok else 1
 
 

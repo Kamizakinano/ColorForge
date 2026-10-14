@@ -7,8 +7,17 @@ from pathlib import Path
 
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
-        from colorforge.selftest import run_selftest
-        return run_selftest(sys.argv[2] if len(sys.argv) > 2 else None)
+        if not os.environ.get("QT_QPA_PLATFORM"):
+            os.environ["QT_QPA_PLATFORM"] = "offscreen"
+        try:
+            from colorforge.selftest import run_selftest
+            return run_selftest(sys.argv[2] if len(sys.argv) > 2 else None)
+        except BaseException:  # mai finestre di errore bloccanti durante il collaudo
+            import traceback
+            Path(sys.argv[2] if len(sys.argv) > 2 else ".").mkdir(parents=True, exist_ok=True)
+            (Path(sys.argv[2] if len(sys.argv) > 2 else ".") / "selftest_crash.txt").write_text(
+                traceback.format_exc(), "utf-8")
+            return 3
     log_dir = Path(os.environ.get("APPDATA") or Path.home() / ".config") / "ColorForge"
     log_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(filename=log_dir / "colorforge.log", level=logging.INFO,

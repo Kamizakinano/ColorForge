@@ -11,6 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 45
     env:
       QT_QPA_PLATFORM: offscreen
       PYTHONUTF8: "1"
@@ -41,8 +42,10 @@ jobs:
       - name: Collaudo dell'eseguibile
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath "dist\ColorForge\ColorForge.exe" -ArgumentList "--selftest","selftest_out" -Wait -PassThru
-          Get-Content selftest_out\selftest_report.json
+          $p = Start-Process -FilePath "dist\ColorForge\ColorForge.exe" -ArgumentList "--selftest","selftest_out" -PassThru
+          if (-not $p.WaitForExit(300000)) { $p.Kill(); throw "Selftest bloccato oltre 5 minuti" }
+          if (Test-Path selftest_out\selftest_crash.txt) { Get-Content selftest_out\selftest_crash.txt }
+          if (Test-Path selftest_out\selftest_report.json) { Get-Content selftest_out\selftest_report.json }
           if ($p.ExitCode -ne 0) { throw "Selftest fallito: $($p.ExitCode)" }
 
       - name: Installer (Inno Setup)
@@ -61,10 +64,11 @@ jobs:
         shell: pwsh
         run: |
           $setup = Get-ChildItem dist\ColorForge-Setup-*.exe | Select-Object -First 1
-          $p = Start-Process $setup.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/CURRENTUSER","/DIR=$env:RUNNER_TEMP\cfinst" -Wait -PassThru
+          $p = Start-Process $setup.FullName -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER","/DIR=$env:RUNNER_TEMP\cfinst" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Installazione fallita" }
-          $q = Start-Process "$env:RUNNER_TEMP\cfinst\ColorForge.exe" -ArgumentList "--selftest","selftest_inst" -Wait -PassThru
-          if ($q.ExitCode -ne 0) { throw "Selftest dopo installazione fallito" }
+          $q = Start-Process "$env:RUNNER_TEMP\cfinst\ColorForge.exe" -ArgumentList "--selftest","selftest_inst" -PassThru
+          if (-not $q.WaitForExit(300000)) { $q.Kill(); throw "Selftest installato bloccato" }
+          if ($q.ExitCode -ne 0) { Get-Content selftest_inst\* -ErrorAction SilentlyContinue; throw "Selftest dopo installazione fallito" }
           Get-ChildItem dist | Format-Table Name, Length
 
       - uses: actions/upload-artifact@v4
