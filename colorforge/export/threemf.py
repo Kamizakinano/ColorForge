@@ -33,44 +33,45 @@ RELS = """<?xml version="1.0" encoding="UTF-8"?>
 </Relationships>"""
 
 
-def _mesh_xml(m: Mesh) -> str:
-    vs = "\n".join(f'<vertex x="{x:.4f}" y="{y:.4f}" z="{z:.4f}"/>' for x, y, z in m.vertices)
-    ts = "\n".join(f'<triangle v1="{a}" v2="{b}" v3="{c}"/>' for a, b, c in m.faces)
-    return f"<mesh><vertices>\n{vs}\n</vertices><triangles>\n{ts}\n</triangles></mesh>"
+def _write_mesh(fh, m: Mesh) -> None:
+    """Scrive la mesh in streaming (file grandi: centinaia di MB senza tenerli in memoria)."""
+    fh.write(b"<mesh><vertices>\n")
+    np.savetxt(fh, m.vertices, fmt='<vertex x="%.4f" y="%.4f" z="%.4f"/>')
+    fh.write(b"</vertices><triangles>\n")
+    np.savetxt(fh, m.faces, fmt='<triangle v1="%d" v2="%d" v3="%d"/>')
+    fh.write(b"</triangles></mesh>")
 
 
 def write_3mf(parts: list[tuple[str, str, int, Mesh]], path: str | Path,
-              metadata: dict[str, str] | None = None, offset_xy=(0.0, 0.0)) -> None:
-    """`parts`: lista di (nome, colore_hex, slot_estrusore_1based, mesh)."""
+              metadata: dict[str, str] | None = None, offset_xy=(0.0, 0.0),
+              progress=None) -> None:
+    """`parts`: lista di (nome, colore_hex, slot_estrusore_1based, mesh).
+    Scrive prima su file temporaneo e poi rinomina: nessun file a metà."""
     metadata = metadata or {}
+    path = Path(path)
     mats = "\n".join(f'<base name="{escape(n)}" displaycolor="{c}FF"/>' for n, c, _, _ in parts)
-    objs, items, cfg = [], [], []
-    for i, (name, color, slot, mesh) in enumerate(parts):
-        oid = i + 2
-        objs.append(f'<object id="{oid}" name="{escape(name)}" type="model" pid="1" pindex="{i}">'
-                    f"{_mesh_xml(mesh)}</object>")
-        items.append(f'<item objectid="{oid}" transform="1 0 0 0 1 0 0 0 1 {offset_xy[0]:.3f} {offset_xy[1]:.3f} 0" printable="1"/>')
-        cfg.append(f'<object id="{oid}">\n <metadata key="name" value="{escape(name)}"/>\n'
-                   f' <metadata key="extruder" value="{slot}"/>\n</object>')
     meta = "\n".join(f'<metadata name="{escape(k)}">{escape(v)}</metadata>' for k, v in metadata.items())
-    model = f"""<?xml version="1.0" encoding="UTF-8"?>
-<model unit="millimeter" xml:lang="it-IT" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
-{meta}
-<resources>
-<basematerials id="1">
-{mats}
-</basematerials>
-{chr(10).join(objs)}
-</resources>
-<build>
-{chr(10).join(items)}
-</build>
-</model>"""
-    settings = '<?xml version="1.0" encoding="UTF-8"?>\n<config>\n' + "\n".join(cfg) + "\n</config>"
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+    head = (f'<?xml version="1.0" encoding="UTF-8"?>\n<model unit="millimeter" xml:lang="it-IT" '
+            f'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n{meta}\n<resources>\n'
+            f'<basematerials id="1">\n{mats}\n</basematerials>\n')
+    tmp = path.with_suffix(path.suffix + ".part")
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=5) as z:
         z.writestr("[Content_Types].xml", CONTENT_TYPES)
         z.writestr("_rels/.rels", RELS)
-        z.writestr("3D/3dmodel.model", model)
+        with z.open("3D/3dmodel.model", "w", force_zip64=True) as fh:
+            fh.write(head.encode("utf-8"))
+            for i, (name, _c, _slot, mesh) in enumerate(parts):
+                fh.write(f'<object id="{i + 2}" name="{escape(name)}" type="model" pid="1" pindex="{i}">'.encode())
+                _write_mesh(fh, mesh)
+                fh.write(b"</object>\n")
+                if progress:
+                    progress((i + 1) / len(parts), f"Scrittura 3MF: oggetto {i + 1}/{len(parts)}")
+            items = "\n".join(
+                f'<item objectid="{i + 2}" transform="1 0 0 0 1 0 0 0 1 {offset_xy[0]:.3f} {offset_xy[1]:.3f} 0" printable="1"/>'
+                for i in range(len(parts)))
+            fh.write(f"</resources>\n<build>\n{items}\n</build>\n</model>".encode())
+    import os
+    os.replace(tmp, path)
 
 
 def read_3mf_meshes(path: str | Path) -> list[tuple[str, np.ndarray, np.ndarray]]:

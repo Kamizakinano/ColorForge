@@ -6,8 +6,8 @@ import traceback
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QObject, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QImage, QPixmap
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices, QImage, QPixmap
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView,
                                QGroupBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
@@ -18,7 +18,9 @@ from colorforge.color.spaces import srgb_to_hex
 from colorforge.filaments.database import FilamentDatabase
 from colorforge.gui.filament_editor import FilamentEditor
 from colorforge.imaging.importer import ImageImportError, LoadedImage, load_image
-from colorforge.pipeline import Cancelled, JobResult, JobSettings, build_report, export_all, run
+from colorforge.gui.palette import PalettePanel
+from colorforge.pipeline import (Cancelled, JobResult, JobSettings, build_report, export_3mf, export_all,
+                                 palette_filaments, run)
 from colorforge.printers.profiles import load_printers
 from colorforge.project.session import load_project, save_project
 
@@ -78,6 +80,26 @@ class Worker(QObject):
                              "Dettagli nel file di log.")
 
 
+class TaskWorker(QObject):
+    """Esegue una funzione lunga (es. esportazione) fuori dal thread dell'interfaccia."""
+    progress = Signal(float, str)
+    done = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, fn):
+        super().__init__()
+        self.fn = fn
+
+    def run(self):
+        try:
+            self.done.emit(self.fn(self.progress.emit))
+        except OSError as e:
+            self.failed.emit(f"Impossibile scrivere il file: {e}")
+        except Exception as e:
+            log.error("Errore\n%s", traceback.format_exc())
+            self.failed.emit(f"Errore imprevisto ({type(e).__name__}): {e}")
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -89,6 +111,13 @@ class MainWindow(QMainWindow):
         self.result: JobResult | None = None
         self.thread: QThread | None = None
         self.worker: Worker | None = None
+        self.pending_auto = False
+        self.auto_run = False
+        self.auto_timer = QTimer(self)
+        self.auto_timer.setSingleShot(True)
+        self.auto_timer.setInterval(700)
+        self.auto_timer.timeout.connect(lambda: self.start(auto=True))
+        self._bg: list = []
         self.printers = load_printers()
         self._build()
         self.refresh_filaments()
@@ -155,15 +184,39 @@ class MainWindow(QMainWindow):
         self.bt_run.clicked.connect(self.start)
         self.bt_cancel = QPushButton("Annulla"); self.bt_cancel.setEnabled(False)
         self.bt_cancel.clicked.connect(self.cancel)
-        self.bt_export = QPushButton("💾  Esporta progetto di stampa…"); self.bt_export.setEnabled(False)
+        self.bt_3mf = QPushButton("💾  Esporta 3MF per Bambu Studio…"); self.bt_3mf.setEnabled(False)
+        self.bt_3mf.clicked.connect(self.export_3mf_file)
+        self.bt_export = QPushButton("📁  Esporta tutto (STL, 3MF, istruzioni)…"); self.bt_export.setEnabled(False)
         self.bt_export.clicked.connect(self.export)
-        for w in (self.bt_run, self.bt_cancel, self.bt_export):
+        for w in (self.bt_run, self.bt_cancel, self.bt_3mf, self.bt_export):
             sl.addWidget(w)
 
         self.tabs = QTabWidget()
-        self.v_orig, self.v_prep, self.v_sim, self.v_err, self.v_cmp = (ZoomView() for _ in range(5))
-        for v, t in ((self.v_orig, "Originale"), (self.v_prep, "Preparata"), (self.v_sim, "Risultato previsto"),
-                     (self.v_cmp, "Confronto"), (self.v_err, "Mappa errori ΔE")):
+        self.v_orig, self.v_prep, self.v_sim, self.v_err = (ZoomView() for _ in range(4))
+        self.palette = PalettePanel(to_pixmap)
+        self.palette.changed.connect(self._palette_changed)
+        self.palette.bt_add.clicked.connect(self.palette_to_db)
+        self.ck_auto = QCheckBox("Aggiorna automaticamente l'anteprima quando cambio i colori")
+        self.ck_auto.setChecked(True)
+        self.lb_source = QLabel("")
+        main = QWidget()
+        ml = QVBoxLayout(main)
+        ml.setContentsMargins(0, 0, 0, 0)
+        cmp_split = QSplitter()
+        for w, title in ((self.v_orig, "Originale"), (self.palette, None), (self.v_sim, "Risultato previsto")):
+            if title:
+                box = QWidget(); bl = QVBoxLayout(box); bl.setContentsMargins(0, 0, 0, 0)
+                bl.addWidget(QLabel(f"<b>{title}</b>")); bl.addWidget(w)
+                cmp_split.addWidget(box)
+            else:
+                cmp_split.addWidget(w)
+        cmp_split.setSizes([450, 220, 450])
+        ml.addWidget(cmp_split, 1)
+        row = QHBoxLayout(); row.addWidget(self.ck_auto); row.addStretch(1); row.addWidget(self.lb_source)
+        ml.addLayout(row)
+        self.v_cmp = main
+        for v, t in ((main, "Originale · colori · risultato"), (self.v_prep, "Preparata"),
+                     (self.v_err, "Mappa errori ΔE")):
             self.tabs.addTab(v, t)
         self.txt = QTextEdit(); self.txt.setReadOnly(True)
         right = QSplitter(Qt.Orientation.Vertical)
@@ -216,9 +269,19 @@ class MainWindow(QMainWindow):
         return [self.lst_fil.item(i).data(Qt.ItemDataRole.UserRole) for i in range(self.lst_fil.count())
                 if self.lst_fil.item(i).checkState() == Qt.CheckState.Checked]
 
-    def settings(self) -> JobSettings:
+    def job_filaments(self) -> tuple[FilamentDatabase, list[str], str]:
+        """Filamenti da usare: i colori spuntati nella tavolozza, se ce ne sono,
+        altrimenti i filamenti selezionati a sinistra."""
+        chosen = self.palette.selected()
+        if chosen:
+            fil = palette_filaments(chosen)
+            return FilamentDatabase(fil), [f.id for f in fil], f"Colori scelti dall'immagine: {len(fil)}"
+        ids = self.selected_filaments()
+        return self.db, ids, f"I miei filamenti: {len(ids)}"
+
+    def settings(self, fids: list[str] | None = None) -> JobSettings:
         s = JobSettings(printer_id=self.cb_printer.currentData(), changer_id=self.cb_changer.currentData(),
-                        filament_ids=self.selected_filaments(), slots=dict(self.slots),
+                        filament_ids=fids if fids is not None else self.selected_filaments(), slots=dict(self.slots),
                         width_mm=self.sp_width.value(), pixel_mm=self.sp_pixel.value(),
                         max_colors=self.sp_colors.value(), quality=self.cb_quality.currentData())
         s.print.layer_height_mm = self.sp_layer.value()
@@ -243,7 +306,9 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Fotografia", str(e))
             return
         self.v_orig.set_image(self.image.srgb)
-        self.tabs.setCurrentWidget(self.v_orig)
+        self.v_sim.set_image(None)
+        self.palette.set_image(self.image.srgb)
+        self.tabs.setCurrentWidget(self.v_cmp)
         self._update_height()
         self.txt.setPlainText("Fotografia caricata.\n" + "\n".join(self.image.notes))
 
@@ -253,17 +318,57 @@ class MainWindow(QMainWindow):
             self.db, self.slots = dlg.db, dlg.slots
             self.refresh_filaments()
 
-    def start(self):
+    def _palette_changed(self):
+        n = len(self.palette.selected())
+        self.lb_source.setText(f"Colori scelti: {n}" if n else "Nessun colore scelto: uso i miei filamenti")
+        if self.image is not None and n and self.ck_auto.isChecked():
+            self.auto_timer.start()
+
+    def palette_to_db(self):
+        from colorforge.filaments.database import default_user_db_path
+        added = 0
+        for f in palette_filaments(self.palette.selected()):
+            f.id = f"utente-{f.id}"
+            f.brand, f.owned_spools = "", 1
+            f.name = f"Filamento {f.name}"
+            if f.id not in self.db:
+                self.db.add(f)
+                added += 1
+        try:
+            self.db.save(default_user_db_path())
+        except OSError as e:
+            QMessageBox.warning(self, "Filamenti", str(e))
+        self.refresh_filaments()
+        QMessageBox.information(self, "Filamenti", f"{added} colori aggiunti ai tuoi filamenti. "
+                                "Puoi completarli (marca, TD, slot) in 'I miei filamenti'.")
+
+    def start(self, auto: bool = False):
         if self.image is None:
-            QMessageBox.information(self, "ColorForge", "Carica prima una fotografia.")
+            if not auto:
+                QMessageBox.information(self, "ColorForge", "Carica prima una fotografia.")
             return
-        s = self.settings()
+        if self.thread is not None and self.thread.isRunning():
+            if auto:  # ricalcolo richiesto mentre ne gira un altro: annulla e rilancia
+                self.pending_auto = True
+                self.worker.cancel = True
+            return
+        db, fids, source = self.job_filaments()
+        s = self.settings(fids)
         if not s.filament_ids:
-            QMessageBox.information(self, "ColorForge", "Seleziona almeno un filamento.")
+            if not auto:
+                QMessageBox.information(self, "ColorForge", "Seleziona almeno un colore o un filamento.")
             return
-        self.bt_run.setEnabled(False); self.bt_cancel.setEnabled(True); self.bt_export.setEnabled(False)
+        s.max_colors = min(s.max_colors, len(fids))
+        if auto:  # anteprima rapida: ricerca limitata e risoluzione ridotta
+            s.quality = "veloce"
+            s.pixel_mm = max(s.pixel_mm, s.width_mm / 160)
+        self.lb_source.setText(source + (" · anteprima rapida" if auto else ""))
+        self.auto_run = auto
+        self.bt_run.setEnabled(False); self.bt_cancel.setEnabled(True)
+        self.bt_export.setEnabled(False); self.bt_3mf.setEnabled(False)
+        self.job_db = db
         self.thread = QThread(self)
-        self.worker = Worker(self.image, self.db, s)
+        self.worker = Worker(self.image, db, s)
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self._on_progress)
@@ -271,7 +376,13 @@ class MainWindow(QMainWindow):
         self.worker.failed.connect(self._on_failed)
         self.worker.done.connect(self.thread.quit)
         self.worker.failed.connect(self.thread.quit)
+        self.thread.finished.connect(self._after_thread)
         self.thread.start()
+
+    def _after_thread(self):
+        if self.pending_auto:
+            self.pending_auto = False
+            QTimer.singleShot(0, lambda: self.start(auto=True))
 
     def cancel(self):
         if self.worker:
@@ -287,26 +398,34 @@ class MainWindow(QMainWindow):
 
     def _on_failed(self, msg: str):
         self._finish_ui()
+        if self.pending_auto:
+            return
         self.progress.setValue(0)
         self.lb_phase.setText("Interrotto")
-        QMessageBox.warning(self, "Elaborazione", msg)
+        if getattr(self, "auto_run", False):
+            self.lb_source.setText(msg)
+        else:
+            QMessageBox.warning(self, "Elaborazione", msg)
 
     def _on_done(self, res: JobResult):
         self._finish_ui()
         self.progress.setValue(1000)
-        self.lb_phase.setText(f"Completato in {res.elapsed_s:.0f} s")
+        self.lb_phase.setText(f"Completato in {res.elapsed_s:.0f} s"
+                              + (" (anteprima rapida: premi 'Elabora' per la qualità massima)" if self.auto_run else ""))
         self.show_result(res)
 
     def show_result(self, res: JobResult):
         self.result = res
-        self.bt_export.setEnabled(True)
-        self.v_orig.set_image(res.original_srgb)
+        self.result_db = getattr(self, "job_db", self.db)
+        self.bt_export.setEnabled(True); self.bt_3mf.setEnabled(True)
+        first = self.v_orig.item.pixmap().isNull()
+        if first:
+            self.v_orig.set_image(res.original_srgb)
         self.v_prep.set_image(res.prepared_srgb)
         self.v_sim.set_image(res.simulated_srgb)
         self.v_err.set_image(res.error_map_rgb())
-        gap = np.ones((res.prepared_srgb.shape[0], 4, 3))
-        self.v_cmp.set_image(np.concatenate([res.prepared_srgb, gap, res.simulated_srgb], 1))
-        self.tabs.setCurrentWidget(self.v_cmp)
+        if self.tabs.currentWidget() is not self.v_err:
+            self.tabs.setCurrentWidget(self.v_cmp)
         r = build_report(res)
         m = res.metrics
         html = [f"<h3>Risultato previsto (simulazione, non garanzia del risultato fisico)</h3>",
@@ -325,18 +444,58 @@ class MainWindow(QMainWindow):
         html.append("<p><b>Operazioni:</b></p><ul>" + "".join(f"<li>{w}</li>" for w in res.log) + "</ul>")
         self.txt.setHtml("".join(html))
 
+    def _run_task(self, fn, on_done, title):
+        self.bt_export.setEnabled(False); self.bt_3mf.setEnabled(False); self.bt_run.setEnabled(False)
+        th = QThread(self)
+        wk = TaskWorker(fn)
+        wk.moveToThread(th)
+        th.started.connect(wk.run)
+        wk.progress.connect(self._on_progress)
+
+        def finish():
+            self.bt_export.setEnabled(True); self.bt_3mf.setEnabled(True); self.bt_run.setEnabled(True)
+        wk.done.connect(lambda r: (finish(), self.progress.setValue(1000), on_done(r)))
+        wk.failed.connect(lambda m: (finish(), QMessageBox.warning(self, title, m)))
+        wk.done.connect(th.quit)
+        wk.failed.connect(th.quit)
+        self._bg.append((th, wk))
+        th.finished.connect(lambda: self._bg.remove((th, wk)) if (th, wk) in self._bg else None)
+        self.lb_phase.setText(title + "…")
+        th.start()
+
+    def _done_msg(self, title: str, paths: list[str]):
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setText("File salvati:\n" + "\n".join(paths))
+        open_btn = box.addButton("Apri cartella", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Ok)
+        box.exec()
+        if box.clickedButton() is open_btn:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(paths[0]).parent)))
+        self.lb_phase.setText(title + " completata")
+
+    def export_3mf_file(self):
+        if not self.result:
+            return
+        p, _ = QFileDialog.getSaveFileName(self, "Esporta 3MF", str(Path.home() / "colorforge.3mf"),
+                                           "Progetto 3MF (*.3mf)")
+        if not p:
+            return
+        if not p.lower().endswith(".3mf"):
+            p += ".3mf"
+        res = self.result
+        self._run_task(lambda prog: (export_3mf(res, p, progress=prog), p)[1],
+                       lambda path: self._done_msg("Esportazione 3MF", [path]), "Esportazione 3MF")
+
     def export(self):
         if not self.result:
             return
-        d = QFileDialog.getExistingDirectory(self, "Cartella di esportazione")
+        d = QFileDialog.getExistingDirectory(self, "Cartella di esportazione", str(Path.home()))
         if not d:
             return
-        try:
-            files = export_all(self.result, d)
-        except OSError as e:
-            QMessageBox.warning(self, "Esportazione", f"Impossibile scrivere i file: {e}")
-            return
-        QMessageBox.information(self, "Esportazione", "File creati:\n" + "\n".join(files.values()))
+        res = self.result
+        self._run_task(lambda prog: export_all(res, d, progress=prog),
+                       lambda files: self._done_msg("Esportazione", list(files.values())), "Esportazione")
 
     def save_project(self):
         if not self.result:
@@ -345,9 +504,18 @@ class MainWindow(QMainWindow):
         p, _ = QFileDialog.getSaveFileName(self, "Salva progetto", "progetto.cfproj", "Progetto ColorForge (*.cfproj)")
         if p:
             try:
-                save_project(p, self.result, self.db)
+                save_project(p, self.result, getattr(self, 'result_db', self.db))
             except OSError as e:
                 QMessageBox.warning(self, "Progetto", str(e))
+
+    def closeEvent(self, e):
+        if self.worker:
+            self.worker.cancel = True
+        for th in [self.thread] + [t for t, _ in self._bg]:
+            if th is not None and th.isRunning():
+                th.quit()
+                th.wait(15000)
+        super().closeEvent(e)
 
     def open_project(self):
         p, _ = QFileDialog.getOpenFileName(self, "Apri progetto", "", "Progetto ColorForge (*.cfproj)")

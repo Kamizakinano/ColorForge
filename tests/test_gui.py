@@ -46,3 +46,41 @@ def test_filament_editor_manual_entry(app, tmp_path, monkeypatch):
     f = dlg.db.get("utente-1")
     assert f.name == "PLA Rosa" and f.td_mm == 3.5 and dlg.slots["utente-1"] == 5
     assert (tmp_path / "ColorForge" / "filaments.json").exists()
+
+
+def _wait(app, cond, timeout=60):
+    import time
+    t = time.time()
+    while not cond() and time.time() - t < timeout:
+        app.processEvents()
+        time.sleep(0.02)
+    app.processEvents()
+    return cond()
+
+
+def test_palette_selection_updates_preview_and_exports_3mf(app, tmp_path, monkeypatch):
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    from PySide6.QtCore import Qt
+    from PIL import Image
+    import numpy as np
+    from colorforge.gui.main_window import MainWindow
+    from colorforge.export.threemf import read_3mf_meshes
+    from tests.conftest import make_image
+    p = tmp_path / "s.png"
+    Image.fromarray((make_image("saturated").srgb * 255).astype(np.uint8)).save(p)
+    w = MainWindow()
+    w.sp_width.setValue(20); w.sp_pixel.setValue(0.5)
+    w.load_image_path(str(p))
+    assert w.palette.list.count() > 0
+    for i in range(min(3, w.palette.list.count())):
+        w.palette.list.item(i).setCheckState(Qt.CheckState.Checked)
+    assert _wait(app, lambda: w.result is not None and not (w.thread and w.thread.isRunning()))
+    chosen = {f"img-{h.lstrip('#')}" for h in w.palette.selected()}
+    assert set(w.result.solution.filaments) <= chosen
+    # esportazione 3MF in background
+    from colorforge.pipeline import export_3mf
+    out = tmp_path / "x.3mf"
+    done = []
+    w._run_task(lambda prog: (export_3mf(w.result, out, progress=prog), str(out))[1], done.append, "Esportazione 3MF")
+    assert _wait(app, lambda: bool(done))
+    assert out.exists() and len(read_3mf_meshes(out)) >= 1

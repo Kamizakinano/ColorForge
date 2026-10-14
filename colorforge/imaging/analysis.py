@@ -59,8 +59,11 @@ def subject_mask(srgb: np.ndarray) -> np.ndarray:
     return lbl == (int(np.argmax(sizes)) + 1)
 
 
-def analyze(srgb: np.ndarray, print_pixel_mm: float | None = None) -> ImageReport:
+def analyze(srgb: np.ndarray, print_pixel_mm: float | None = None, max_pixels: int = 1_000_000) -> ImageReport:
     h, w = srgb.shape[:2]
+    step = int(np.ceil(np.sqrt(h * w / max_pixels)))
+    if step > 1:  # le statistiche non richiedono la piena risoluzione
+        srgb = srgb[::step, ::step]
     lab = srgb_to_lab(srgb)
     L = lab[..., 0]
     chroma = np.hypot(lab[..., 1], lab[..., 2])

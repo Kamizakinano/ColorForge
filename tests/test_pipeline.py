@@ -53,3 +53,19 @@ def test_transparency_and_bad_file(tmp_path):
     bad = tmp_path / "rotta.png"; bad.write_bytes(b"non un png")
     with pytest.raises(ImageImportError):
         load_image(bad)
+
+
+def test_palette_and_palette_filaments(db, tmp_path):
+    from colorforge.filaments.database import FilamentDatabase
+    from colorforge.pipeline import export_3mf, image_palette, palette_filaments
+    from colorforge.export.threemf import read_3mf_meshes
+    img = make_image("saturated")
+    pal = image_palette(img.srgb, k=6)
+    assert abs(sum(w for _, w in pal) - 1) < 1e-6 and pal[0][1] >= pal[-1][1]
+    fil = palette_filaments([h for h, _ in pal[:3]] + ["#FFFFFF"])
+    pdb = FilamentDatabase(fil)
+    res = run(img, pdb, settings(filament_ids=[f.id for f in fil], max_colors=4))
+    assert set(res.solution.filaments) <= {f.id for f in fil}
+    probs = export_3mf(res, tmp_path / "x.3mf")
+    assert all(v == [] for v in probs.values())
+    assert len(read_3mf_meshes(tmp_path / "x.3mf")) == len(probs)

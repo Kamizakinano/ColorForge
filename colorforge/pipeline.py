@@ -236,20 +236,28 @@ def band_meshes(res: JobResult) -> list[tuple[str, str, int, Mesh, dict]]:
     return out
 
 
-def export_all(res: JobResult, out_dir: str | Path, stem: str = "colorforge") -> dict[str, str]:
+def export_3mf(res: JobResult, path: str | Path, progress=None) -> dict:
+    """Esporta il solo 3MF multi-oggetto. Ritorna i problemi geometrici per fascia."""
+    bands = band_meshes(res)
+    problems = {name: validate(m) for name, _, _, m, _ in bands}
+    write_3mf([(n, c, sl, m) for n, c, sl, m, _ in bands], path,
+              {"Title": Path(path).stem, "Application": f"ColorForge AI {__version__}",
+               "Designer": "ColorForge AI"}, progress=progress)
+    return problems
+
+
+def export_all(res: JobResult, out_dir: str | Path, stem: str = "colorforge", progress=None) -> dict[str, str]:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
+    progress = progress or (lambda p, m: None)
     files = {}
+    progress(0.02, "Creazione STL")
     mesh = column_mesh(res.levels, res.settings.pixel_mm, res.plan.z_of_level)
     p = out / f"{stem}.stl"
     write_stl(mesh, p)
     files["stl"] = str(p)
-    bands = band_meshes(res)
-    band_problems = {name: validate(m) for name, _, _, m, _ in bands}
     p = out / f"{stem}.3mf"
-    write_3mf([(n, c, sl, m) for n, c, sl, m, _ in bands], p,
-              {"Title": stem, "Application": f"ColorForge AI {__version__}",
-               "Designer": "ColorForge AI"})
+    band_problems = export_3mf(res, p, progress=lambda f, m: progress(0.1 + 0.8 * f, m))
     files["3mf"] = str(p)
     for key, arr in (("anteprima", res.simulated_srgb), ("preparata", res.prepared_srgb),
                      ("errori", res.error_map_rgb())):
@@ -264,6 +272,27 @@ def export_all(res: JobResult, out_dir: str | Path, stem: str = "colorforge") ->
     p.write_text(report_text(report), "utf-8")
     files["istruzioni"] = str(p)
     return files
+
+
+def image_palette(srgb: np.ndarray, k: int = 16, seed: int = 0) -> list[tuple[str, float]]:
+    """Colori principali della foto: [(hex, frazione)], dal più presente."""
+    from colorforge.color.spaces import lab_to_srgb
+    from colorforge.optimize.search import representative_colors
+    h, w = srgb.shape[:2]
+    step = max(1, int(np.sqrt(h * w / 60000)))
+    lab = srgb_to_lab(srgb[::step, ::step])
+    cent, wts = representative_colors(lab, k, seed)
+    order = np.argsort(-wts)
+    return [(srgb_to_hex(lab_to_srgb(cent[i])), float(wts[i])) for i in order]
+
+
+def palette_filaments(hex_colors: list[str]):
+    """Filamenti temporanei dai colori scelti nella tavolozza (dati ottici stimati)."""
+    from colorforge.filaments.model import Filament, Reliability
+    return [Filament.from_hex(f"img-{h.lstrip('#').upper()}", "Colore immagine", h.upper(), h,
+                              color_reliability=Reliability.ESTIMATED,
+                              source="Colore estratto dalla foto, non un filamento misurato")
+            for h in hex_colors]
 
 
 def build_report(res: JobResult, band_problems: dict | None = None) -> dict:
