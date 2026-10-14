@@ -27,9 +27,8 @@ def test_main_window_runs_job(app, tmp_path, monkeypatch):
     s = w.settings()
     assert s.printer_id == "bambu-x2d" and s.changer_id == "ams2pro-x2" and s.filament_ids
     w.start()
-    w.thread.wait(60000)
-    app.processEvents()
-    assert w.result is not None and w.bt_export.isEnabled()
+    assert _wait(app, lambda: w.result is not None and not w.thread.isRunning())
+    assert w.bt_export.isEnabled()
 
 
 def test_filament_editor_manual_entry(app, tmp_path, monkeypatch):
@@ -81,6 +80,14 @@ def test_palette_selection_updates_preview_and_exports_3mf(app, tmp_path, monkey
     from colorforge.pipeline import export_3mf
     out = tmp_path / "x.3mf"
     done = []
+    from PySide6.QtCore import QThread
+    main_thread = QThread.currentThread()
+    seen = []
+    orig = w._on_progress
+    w._on_progress = lambda p_, m: (seen.append(QThread.currentThread() is main_thread), orig(p_, m))
     w._run_task(lambda prog: (export_3mf(w.result, out, progress=prog), str(out))[1], done.append, "Esportazione 3MF")
     assert _wait(app, lambda: bool(done))
     assert out.exists() and len(read_3mf_meshes(out)) >= 1
+    # l'interfaccia deve essere aggiornata solo dal thread principale (crash su Windows altrimenti)
+    assert seen and all(seen)
+    assert not list(tmp_path.glob("*.part"))

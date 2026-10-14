@@ -46,7 +46,7 @@ def write_3mf(parts: list[tuple[str, str, int, Mesh]], path: str | Path,
               metadata: dict[str, str] | None = None, offset_xy=(0.0, 0.0),
               progress=None) -> None:
     """`parts`: lista di (nome, colore_hex, slot_estrusore_1based, mesh).
-    Scrive prima su file temporaneo e poi rinomina: nessun file a metà."""
+    Scrive prima su un file temporaneo di sistema e poi lo sposta: nessun file a metà."""
     metadata = metadata or {}
     path = Path(path)
     mats = "\n".join(f'<base name="{escape(n)}" displaycolor="{c}FF"/>' for n, c, _, _ in parts)
@@ -54,7 +54,22 @@ def write_3mf(parts: list[tuple[str, str, int, Mesh]], path: str | Path,
     head = (f'<?xml version="1.0" encoding="UTF-8"?>\n<model unit="millimeter" xml:lang="it-IT" '
             f'xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">\n{meta}\n<resources>\n'
             f'<basematerials id="1">\n{mats}\n</basematerials>\n')
-    tmp = path.with_suffix(path.suffix + ".part")
+    import os
+    import shutil
+    import tempfile
+    # File temporaneo nella cartella temporanea di sistema, non accanto al file finale:
+    # l'utente non vede mai un ".part" e un errore non lascia residui.
+    fd, tmp = tempfile.mkstemp(prefix="colorforge_", suffix=".3mf.tmp")
+    os.close(fd)
+    try:
+        _write_3mf_zip(tmp, parts, head, progress, offset_xy)
+        shutil.move(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def _write_3mf_zip(tmp, parts, head, progress, offset_xy):
     with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=5) as z:
         z.writestr("[Content_Types].xml", CONTENT_TYPES)
         z.writestr("_rels/.rels", RELS)
@@ -70,8 +85,6 @@ def write_3mf(parts: list[tuple[str, str, int, Mesh]], path: str | Path,
                 f'<item objectid="{i + 2}" transform="1 0 0 0 1 0 0 0 1 {offset_xy[0]:.3f} {offset_xy[1]:.3f} 0" printable="1"/>'
                 for i in range(len(parts)))
             fh.write(f"</resources>\n<build>\n{items}\n</build>\n</model>".encode())
-    import os
-    os.replace(tmp, path)
 
 
 def read_3mf_meshes(path: str | Path) -> list[tuple[str, np.ndarray, np.ndarray]]:

@@ -22,6 +22,16 @@ def main() -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(filename=log_dir / "colorforge.log", level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # crash nativi (es. Qt) e eccezioni non gestite finiscono nel log
+    import faulthandler
+    global _crash_log
+    _crash_log = open(log_dir / "colorforge_crash.log", "a", encoding="utf-8")
+    faulthandler.enable(_crash_log, all_threads=True)
+
+    def _hook(et, ev, tb):
+        import traceback
+        logging.getLogger("colorforge").error("Eccezione non gestita:\n%s", "".join(traceback.format_exception(et, ev, tb)))
+    sys.excepthook = _hook
     from PySide6.QtWidgets import QApplication
     from colorforge.gui.main_window import MainWindow
     app = QApplication(sys.argv)

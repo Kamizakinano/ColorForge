@@ -6,7 +6,7 @@ import traceback
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QAction, QDesktopServices, QImage, QPixmap
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView,
@@ -98,6 +98,32 @@ class TaskWorker(QObject):
         except Exception as e:
             log.error("Errore\n%s", traceback.format_exc())
             self.failed.emit(f"Errore imprevisto ({type(e).__name__}): {e}")
+
+
+class Relay(QObject):
+    """Riceve i segnali di un worker nel thread dell'interfaccia.
+
+    I segnali collegati a lambda o funzioni semplici verrebbero eseguiti nel
+    thread del worker (toccare i widget da lì fa chiudere l'app su Windows):
+    collegandoli agli slot di un QObject del thread principale Qt li accoda
+    correttamente.
+    """
+
+    def __init__(self, on_progress, on_done, on_failed, parent=None):
+        super().__init__(parent)
+        self._p, self._d, self._f = on_progress, on_done, on_failed
+
+    @Slot(float, str)
+    def progress(self, p, m):
+        self._p(p, m)
+
+    @Slot(object)
+    def done(self, r):
+        self._d(r)
+
+    @Slot(str)
+    def failed(self, m):
+        self._f(m)
 
 
 class MainWindow(QMainWindow):
@@ -463,23 +489,49 @@ class MainWindow(QMainWindow):
         self.txt.setHtml("".join(html))
 
     def _run_task(self, fn, on_done, title):
+        from PySide6.QtWidgets import QProgressDialog
         self.bt_export.setEnabled(False); self.bt_3mf.setEnabled(False); self.bt_run.setEnabled(False)
+        dlg = QProgressDialog(f"{title} in corso…\nAttendi la fine prima di aprire il file.", None, 0, 1000, self)
+        dlg.setWindowTitle(title)
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(False)
+        dlg.show()
         th = QThread(self)
         wk = TaskWorker(fn)
         wk.moveToThread(th)
-        th.started.connect(wk.run)
-        wk.progress.connect(self._on_progress)
 
         def finish():
+            dlg.close()
             self.bt_export.setEnabled(True); self.bt_3mf.setEnabled(True); self.bt_run.setEnabled(True)
-        wk.done.connect(lambda r: (finish(), self.progress.setValue(1000), on_done(r)))
-        wk.failed.connect(lambda m: (finish(), QMessageBox.warning(self, title, m)))
+
+        def prog(p, m):
+            self._on_progress(p, m)
+            dlg.setValue(int(p * 1000))
+            dlg.setLabelText(f"{m}\nAttendi la fine prima di aprire il file.")
+
+        def ok(r):
+            finish(); self.progress.setValue(1000); on_done(r)
+
+        def ko(m):
+            finish(); QMessageBox.warning(self, title, m)
+        relay = Relay(prog, ok, ko, self)
+        th.started.connect(wk.run)
+        wk.progress.connect(relay.progress)
+        wk.done.connect(relay.done)
+        wk.failed.connect(relay.failed)
         wk.done.connect(th.quit)
         wk.failed.connect(th.quit)
-        self._bg.append((th, wk))
-        th.finished.connect(lambda: self._bg.remove((th, wk)) if (th, wk) in self._bg else None)
+        item = (th, wk, relay)
+        self._bg.append(item)
+        th.finished.connect(relay.deleteLater)
+        th.finished.connect(self._cleanup_bg)
         self.lb_phase.setText(title + "…")
         th.start()
+
+    @Slot()
+    def _cleanup_bg(self):
+        self._bg = [x for x in self._bg if x[0].isRunning()]
 
     def _done_msg(self, title: str, paths: list[str]):
         box = QMessageBox(self)
@@ -529,7 +581,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e):
         if self.worker:
             self.worker.cancel = True
-        for th in [self.thread] + [t for t, _ in self._bg]:
+        for th in [self.thread] + [x[0] for x in self._bg]:
             if th is not None and th.isRunning():
                 th.quit()
                 th.wait(15000)
