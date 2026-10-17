@@ -47,6 +47,10 @@ class JobSettings:
     seed: int = 0
     # "zone": filamenti diversi nello stesso strato (AMS); "layers": cambi per strato (HueForge)
     mode: str = "zone"
+    # 0 = massima fedeltà; 1 = meno cambi filamento possibile (accetta più ΔE)
+    change_economy: float = 0.3
+    # pesi maggiori a contorni, dettagli e soggetto nella scelta dei filamenti
+    use_importance: bool = True
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -195,17 +199,29 @@ def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
 
 def _run_zone(image, db, s, model, plan, target_lab, prepared, max_colors, changer,
               warnings, log, progress, check, t0) -> JobResult:
+    from colorforge.imaging.analysis import importance_map
     from colorforge.optimize.regional import (build_objects, build_recipes, choose_filaments,
-                                              clean_recipes, nearest_recipes)
+                                              clean_recipes, layer_changes, nearest_recipes,
+                                              reduce_changes)
     progress(0.15, "Scelta dei filamenti")
+    weights = importance_map(prepared) if s.use_importance else None
     chosen, _ = choose_filaments(model, plan, target_lab, s.filament_ids, max_colors,
-                                 progress=progress, seed=s.seed)
+                                 progress=progress, seed=s.seed, weights=weights,
+                                 economy=s.change_economy)
     check()
     progress(0.72, "Calcolo delle combinazioni di strati")
     rs = build_recipes(model, plan, chosen, 0, step=1 if s.quality == "massima" else 2)
     progress(0.78, "Assegnazione dei colori per zona")
     idx, _ = nearest_recipes(target_lab, rs)
     idx, nclean, _ = clean_recipes(idx, rs, plan.base_layers, target_lab)
+    check()
+    ch0 = layer_changes(rs, idx, plan.base_layers)
+    if s.change_economy > 0:
+        progress(0.8, "Riduzione dei cambi filamento")
+        idx, ch1, rlog = reduce_changes(rs, idx, target_lab, plan.base_layers, s.change_economy, weights)
+        log += rlog
+        if ch1 < ch0:
+            log.append(f"Cambi filamento ridotti da {ch0} a {ch1}.")
     check()
     log.append(f"Multicolore per zona: {len(rs)} combinazioni di strati con {len(chosen)} filamenti; "
                f"{nclean} pixel isolati uniti ai vicini.")
@@ -244,20 +260,8 @@ def _run_zone(image, db, s, model, plan, target_lab, prepared, max_colors, chang
                       "strato_inizio": 1 if i == 0 else plan.base_layers + 1,
                       "z_inizio_mm": 0.0 if i == 0 else round(float(zl(plan.base_layers)), 3),
                       "z_fine_mm": round(float(zl(plan.max_layers)), 3)})
-    # cambi filamento: per ogni strato, numero di filamenti presenti
     top = int(levels.max())
-    fa, a, fb, b = rs.fa[idx], rs.a[idx], rs.fb[idx], rs.b[idx]
-    B = plan.base_layers
-    changes = 0
-    prev_last = None
-    for l in range(B, top):
-        rel = l - B
-        f_here = np.where(rel < a, fa, np.where(rel < a + b, fb, -2))
-        present = set(np.unique(f_here[(levels > l)]).tolist()) - {-2, -1}
-        n = len(present)
-        if n:
-            changes += n - 1 + (1 if prev_last is not None and prev_last not in present else 0)
-            prev_last = max(present)
+    changes = layer_changes(rs, idx, plan.base_layers)
     volume = sum(vols.values())
     estimate = {
         "nota": "Stime approssimative: verificare con lo slicer.",

@@ -87,15 +87,20 @@ class Solution:
         return len(self.sequence) - 1
 
 
-def representative_colors(lab_pixels: np.ndarray, k: int, seed: int = 0):
-    """k colori rappresentativi (CIELAB) con pesi; deterministico."""
+def representative_colors(lab_pixels: np.ndarray, k: int, seed: int = 0,
+                          pixel_weights: np.ndarray | None = None):
+    """k colori rappresentativi (CIELAB) con pesi; deterministico.
+    `pixel_weights` dà più importanza a zone (dettagli, soggetto)."""
     x = lab_pixels.reshape(-1, 3)
+    pw = None if pixel_weights is None else pixel_weights.reshape(-1)
     rng = np.random.default_rng(seed)
     if len(x) > 40000:
-        x = x[rng.choice(len(x), 40000, replace=False)]
+        sel = rng.choice(len(x), 40000, replace=False)
+        x = x[sel]
+        pw = None if pw is None else pw[sel]
     k = min(k, len(np.unique(np.round(x, 1), axis=0)))
     cent, lbl = kmeans2(x, k, minit="++", seed=seed, iter=20)
-    w = np.bincount(lbl, minlength=k).astype(float)
+    w = np.bincount(lbl, weights=pw, minlength=k).astype(float)
     keep = w > 0
     return cent[keep], w[keep] / w.sum()
 

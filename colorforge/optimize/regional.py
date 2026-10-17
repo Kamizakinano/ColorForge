@@ -101,9 +101,12 @@ def nearest_recipes(target_lab: np.ndarray, rs: RecipeSet, k: int = 24,
     return idx, delta_e2000(target_lab, rs.lab[idx])
 
 
-def choose_filaments(model, plan, target_lab, fids, capacity, progress=None, seed=0):
-    """Sceglie base e sottoinsieme di al più `capacity` filamenti (greedy sul ΔE medio)."""
-    targets, w = representative_colors(target_lab, 64, seed)
+def choose_filaments(model, plan, target_lab, fids, capacity, progress=None, seed=0, weights=None,
+                     economy: float = 0.0):
+    """Sceglie base e sottoinsieme di al più `capacity` filamenti (greedy sul ΔE medio).
+    Ogni filamento in più costa circa un cambio per strato: con `economy` > 0 lo si
+    aggiunge solo se migliora il ΔE medio di almeno `0.05 + 1.2·economy`."""
+    targets, w = representative_colors(target_lab, 64, seed, weights)
     L = np.array([model.layers[f].r_inf.mean() for f in fids])
     base = int(np.argmax(L))  # base chiara: massima riflettanza, sfondo per le velature
     chosen = [base]
@@ -121,7 +124,7 @@ def choose_filaments(model, plan, target_lab, fids, capacity, progress=None, see
         s, i = min(trials)
         if progress:
             progress(0.2 + 0.5 * len(chosen) / max(capacity, 1), f"Scelta filamenti: {len(chosen) + 1}")
-        if s > cur - 0.05:
+        if s > cur - (0.05 + 1.2 * economy):
             break
         cur = s
         chosen.append(i)
@@ -213,3 +216,67 @@ def suggest_purchases(model, plan, target_lab, owned: list[str], candidates: lis
         out.append((c, rep, de, base_de - de))
     out.sort(key=lambda t: -t[3])
     return base_de, current, [o for o in out if o[3] > 0.05][:top]
+
+
+def layer_changes(rs: RecipeSet, idx: np.ndarray, B: int) -> int:
+    """Cambi filamento stimati: per ogni strato sopra la base, filamenti presenti - 1,
+    più un cambio quando lo strato successivo non inizia con l'ultimo usato."""
+    fa, a, fb, b = rs.fa[idx], rs.a[idx], rs.fb[idx], rs.b[idx]
+    top = int((a + b).max()) if idx.size else 0
+    changes, prev = 0, None
+    for rel in range(top):
+        here = np.where(rel < a, fa, np.where(rel < a + b, fb, -1))
+        pres = set(np.unique(here).tolist()) - {-1}
+        if pres:
+            changes += len(pres) - 1 + (1 if prev is not None and prev not in pres else 0)
+            prev = max(pres)
+    return changes
+
+
+def reduce_changes(rs: RecipeSet, idx: np.ndarray, target_lab: np.ndarray, B: int,
+                   economy: float, weights: np.ndarray | None = None, max_steps: int = 40):
+    """Elimina gli usi rari di un filamento in un ruolo (medio/sopra): costano un
+    cambio per strato e incidono poco sulla fedeltà. `economy` 0..1 = quanto
+    ΔE medio si accetta di perdere per ogni cambio risparmiato (0 = nessuna)."""
+    if economy <= 0:
+        return idx, 0, []
+    budget_per_change = 0.004 + 0.05 * economy   # ΔE medio ammesso per cambio risparmiato
+    wts = np.ones(idx.shape) if weights is None else weights
+    wsum = wts.sum()
+    idx = idx.copy()
+    allowed = np.ones(len(rs), dtype=bool)
+    cur_err = delta_e2000(target_lab, rs.lab[idx])
+    cur_mean = float((cur_err * wts).sum() / wsum)
+    cur_changes = layer_changes(rs, idx, B)
+    log = []
+    tree_cache = {}
+    for _ in range(max_steps):
+        fa, fb = rs.fa[idx], rs.fb[idx]
+        usage = []
+        for role, arr in (("medio", fa), ("sopra", fb)):
+            vals, cnt = np.unique(arr[arr >= 0], return_counts=True)
+            usage += [(c, role, int(v)) for v, c in zip(vals, cnt)]
+        usage.sort()
+        accepted = False
+        for cnt, role, f in usage[:4]:          # i 4 usi più rari
+            ban = allowed & ~((rs.fa == f) if role == "medio" else (rs.fb == f))
+            if not ban.any():
+                continue
+            pix = (fa == f) if role == "medio" else (fb == f)
+            sub = np.nonzero(ban)[0]
+            sub_rs = RecipeSet(rs.fids, rs.base, rs.fa[sub], rs.a[sub], rs.fb[sub], rs.b[sub], rs.lin[sub], rs.lab[sub])
+            j, _ = nearest_recipes(target_lab[pix], sub_rs)
+            new_idx = idx.copy()
+            new_idx[pix] = sub[j]
+            err = delta_e2000(target_lab, rs.lab[new_idx])
+            mean = float((err * wts).sum() / wsum)
+            ch = layer_changes(rs, new_idx, B)
+            saved = cur_changes - ch
+            if saved > 0 and (mean - cur_mean) <= budget_per_change * saved:
+                log.append(f"Rimosso {rs.fids[f]} ({role}, {cnt} pixel): −{saved} cambi, ΔE +{mean - cur_mean:.2f}")
+                idx, allowed, cur_mean, cur_changes = new_idx, ban, mean, ch
+                accepted = True
+                break
+        if not accepted:
+            break
+    return idx, cur_changes, log

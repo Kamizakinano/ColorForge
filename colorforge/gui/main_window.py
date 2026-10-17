@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QAction, QDesktopServices, QImage, QPixmap
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QSlider, QComboBox, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView,
                                QGroupBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
                                QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSpinBox,
@@ -186,12 +186,23 @@ class MainWindow(QMainWindow):
                                 "cambi filamento.\nPer strato: un colore per strato su tutto il pannello, "
                                 "pochi cambi, colori limitati.")
         self.cb_mode.currentIndexChanged.connect(lambda _i: self._palette_changed())
+        self.sl_econ = QSlider(Qt.Orientation.Horizontal)
+        self.sl_econ.setRange(0, 100); self.sl_econ.setValue(30)
+        self.sl_econ.setToolTip("Sinistra: massima fedeltà (più filamenti e cambi).\n"
+                                "Destra: meno cambi filamento (stampa più rapida, meno spurgo).")
+        self.lb_econ = QLabel("")
+        self.sl_econ.valueChanged.connect(self._econ_label)
+        self._econ_label(30)
+        econ_box = QWidget(); eb = QHBoxLayout(econ_box); eb.setContentsMargins(0, 0, 0, 0)
+        eb.addWidget(QLabel("Fedeltà")); eb.addWidget(self.sl_econ, 1); eb.addWidget(QLabel("Meno cambi"))
+        self.ck_imp = QCheckBox("Priorità a contorni e soggetto"); self.ck_imp.setChecked(True)
         self.sp_width.valueChanged.connect(self._update_height)
         for lbl, w in (("Larghezza", self.sp_width), ("Altezza (auto)", self.lb_height),
                        ("Risoluzione", self.sp_pixel), ("Altezza strato", self.sp_layer),
                        ("Spessore base", self.sp_base), ("Spessore massimo", self.sp_max),
                        ("Colori massimi", self.sp_colors), ("Modalità colore", self.cb_mode),
-                       ("Qualità", self.cb_quality)):
+                       ("Qualità", self.cb_quality), ("Equilibrio", econ_box), ("", self.lb_econ),
+                       ("", self.ck_imp)):
             f.addRow(lbl, w)
         sl.addWidget(g)
 
@@ -296,6 +307,11 @@ class MainWindow(QMainWindow):
         self._printer_changed()
 
     # --- stato -------------------------------------------------------------
+    def _econ_label(self, v):
+        txt = ("massima fedeltà" if v < 10 else "equilibrato" if v < 50 else
+               "pochi cambi" if v < 85 else "minimo dei cambi")
+        self.lb_econ.setText(f"<small>{txt} ({v}%)</small>")
+
     def _printer_changed(self):
         p = self.printers[self.cb_printer.currentIndex()]
         self.cb_changer.clear()
@@ -337,7 +353,8 @@ class MainWindow(QMainWindow):
                         filament_ids=fids if fids is not None else self.selected_filaments(), slots=dict(self.slots),
                         width_mm=self.sp_width.value(), pixel_mm=self.sp_pixel.value(),
                         max_colors=self.sp_colors.value(), quality=self.cb_quality.currentData(),
-                        mode=self.cb_mode.currentData())
+                        mode=self.cb_mode.currentData(),
+                        change_economy=self.sl_econ.value() / 100, use_importance=self.ck_imp.isChecked())
         s.print.layer_height_mm = self.sp_layer.value()
         s.print.first_layer_height_mm = max(self.sp_layer.value(), 0.16)
         s.print.base_thickness_mm = self.sp_base.value()

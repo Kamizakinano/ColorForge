@@ -103,3 +103,24 @@ def detail_loss_map(srgb: np.ndarray, pixel_mm: float, min_feature_mm: float) ->
     sigma = max(min_feature_mm / max(pixel_mm, 1e-6) / 2, 0.5)
     fine = np.abs(gray - ndimage.gaussian_filter(gray, sigma))
     return np.clip(fine / (fine.max() + 1e-9), 0, 1)
+
+
+def importance_map(srgb: np.ndarray, detail: float = 1.0, center: float = 0.5) -> np.ndarray:
+    """Peso per pixel (media 1): più alto su contorni/dettagli e verso il soggetto.
+    Euristica locale, verificabile: bordo (gradiente di L*) + soggetto stimato + centro."""
+    lab = srgb_to_lab(srgb)
+    L = ndimage.gaussian_filter(lab[..., 0], 0.8)
+    g = np.hypot(ndimage.sobel(L, 0), ndimage.sobel(L, 1))
+    g = ndimage.maximum_filter(g, 3)
+    g = g / (np.percentile(g, 99) + 1e-6)
+    h, w = L.shape
+    yy, xx = np.mgrid[0:h, 0:w]
+    c = 1 - np.hypot((yy - h / 2) / h, (xx - w / 2) / w) * 1.4
+    wmap = 1 + detail * np.clip(g, 0, 1) + center * np.clip(c, 0, 1)
+    try:
+        subj = subject_mask(srgb)
+        if 0.05 < subj.mean() < 0.9:
+            wmap = wmap + 0.5 * subj
+    except Exception:  # la stima del soggetto è facoltativa
+        pass
+    return wmap / wmap.mean()
