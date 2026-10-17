@@ -183,3 +183,33 @@ def build_objects(rs: RecipeSet, idx: np.ndarray, plan: LayerPlan, pixel_mm: flo
     """Mesh chiusa e manifold per ogni (ruolo, filamento)."""
     return {k: interval_mesh(lo, hi, pixel_mm, plan.z_of_level)
             for k, (lo, hi) in objects_intervals(rs, idx, plan.base_layers).items()}
+
+
+def subset_score(model, plan, targets, weights, fids: list[str], base_first: bool = True) -> float:
+    """ΔE00 medio pesato ottenibile con questi filamenti (modalità per zona)."""
+    rs = build_recipes(model, plan, fids, 0, step=2)
+    _, de = nearest_recipes(targets, rs)
+    return float(np.sum(weights * de))
+
+
+def suggest_purchases(model, plan, target_lab, owned: list[str], candidates: list[str],
+                      capacity: int, top: int = 5, seed: int = 0, progress=None):
+    """Quali filamenti in più (o al posto di uno attuale, se l'AMS è pieno)
+    migliorerebbero di più QUESTA immagine. Ritorna [(candidato, sostituito|None, ΔE nuovo, guadagno)]."""
+    targets, w = representative_colors(target_lab, 48, seed)
+    current, _ = choose_filaments(model, plan, target_lab, owned, capacity, seed=seed)
+    base_de = subset_score(model, plan, targets, w, current)
+    out = []
+    for k, c in enumerate(candidates):
+        if progress:
+            progress(k / max(len(candidates), 1), f"Valuto {k + 1}/{len(candidates)}")
+        if c in current:
+            continue
+        if len(current) < capacity:
+            de, rep = subset_score(model, plan, targets, w, current + [c]), None
+        else:  # AMS pieno: prova a sostituire ciascun filamento non di base
+            de, rep = min((subset_score(model, plan, targets, w,
+                                        [x if x != r else c for x in current]), r) for r in current[1:])
+        out.append((c, rep, de, base_de - de))
+    out.sort(key=lambda t: -t[3])
+    return base_de, current, [o for o in out if o[3] > 0.05][:top]

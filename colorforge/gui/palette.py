@@ -18,10 +18,12 @@ class PalettePanel(QWidget):
         super().__init__()
         self._to_pixmap = to_pixmap
         self._image = None
+        self.nearest = None  # callback hex -> (nome filamento, ΔE) dei filamenti posseduti
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
-        t = QLabel("<b>Colori dell'immagine</b><br><small>Spunta i colori dei filamenti che hai. "
-                   "Doppio clic per correggere un colore.</small>")
+        t = QLabel("<b>Colori dell'immagine</b><br><small>Spunta un colore per usarlo come filamento "
+                   "(doppio clic per correggerlo). Nessuna spunta = si usano i tuoi filamenti. "
+                   "→ indica il tuo filamento più simile.</small>")
         t.setWordWrap(True)
         lay.addWidget(t)
         row = QHBoxLayout()
@@ -68,7 +70,12 @@ class PalettePanel(QWidget):
     def _style(self, it: QListWidgetItem, hx: str, w: float):
         rgb = np.array([int(hx[i:i + 2], 16) for i in (1, 3, 5)]) / 255
         it.setIcon(self._to_pixmap(np.ones((20, 32, 3)) * rgb))
-        it.setText(f"{hx}   {w * 100:4.1f}%")
+        txt = f"{hx}   {w * 100:4.1f}%"
+        if self.nearest:
+            name, de = self.nearest(hx)
+            if name:
+                txt += f"\n   → {name} (ΔE {de:.0f})"
+        it.setText(txt)
         it.setData(Qt.ItemDataRole.UserRole, (hx, w))
 
     def _edit(self, it: QListWidgetItem):

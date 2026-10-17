@@ -79,3 +79,20 @@ def test_palette_and_palette_filaments(db, tmp_path):
     probs = export_3mf(res, tmp_path / "x.3mf")
     assert all(v == [] for v in probs.values())
     assert len(read_3mf_meshes(tmp_path / "x.3mf")) == len(probs)
+
+
+def test_suggest_purchases_finds_missing_color(db):
+    import numpy as np
+    from colorforge.color.spaces import srgb_to_lab
+    from colorforge.imaging.preprocess import resize_to_grid
+    from colorforge.optics.km import OpticalModel
+    from colorforge.optimize.regional import suggest_purchases
+    from colorforge.optimize.search import LayerPlan
+    img = make_image("saturated").srgb  # rosso, verde, blu
+    owned = ["generic-pla-white", "generic-pla-red", "generic-pla-blue"]
+    cands = ["generic-pla-green", "generic-pla-yellow", "generic-pla-brown"]
+    fil = [db.get(f) for f in owned + cands]
+    m = OpticalModel(fil)
+    plan = LayerPlan.from_settings(0.16, 0.08, 0.64, 2.4)
+    base, cur, sug = suggest_purchases(m, plan, srgb_to_lab(img), owned, cands, capacity=8)
+    assert sug and sug[0][0] == "generic-pla-green" and sug[0][3] > 1

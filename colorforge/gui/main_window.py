@@ -14,14 +14,14 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBo
                                QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSpinBox,
                                QSplitter, QTabWidget, QTextEdit, QVBoxLayout, QWidget)
 
-from colorforge.color.spaces import srgb_to_hex
+from colorforge.color.spaces import srgb_to_hex, srgb_to_lab
 from colorforge.filaments.database import FilamentDatabase
 from colorforge.gui.filament_editor import FilamentEditor
 from colorforge.imaging.importer import ImageImportError, LoadedImage, load_image
 from colorforge.gui.palette import PalettePanel
 from colorforge.pipeline import (Cancelled, JobResult, JobSettings, build_report, export_3mf, export_all,
                                  palette_filaments, run)
-from colorforge.printers.profiles import load_printers
+from colorforge.printers.profiles import get_printer, load_printers
 from colorforge.project.session import load_project, save_project
 
 log = logging.getLogger("colorforge")
@@ -203,6 +203,10 @@ class MainWindow(QMainWindow):
         b = QPushButton("🎨  I miei filamenti…")
         b.clicked.connect(self.edit_filaments)
         v.addWidget(b)
+        b = QPushButton("💡  Suggerisci filamenti da acquistare")
+        b.setToolTip("Calcola quali filamenti in più migliorerebbero di più questa immagine")
+        b.clicked.connect(self.suggest_purchases)
+        v.addWidget(b)
         sl.addWidget(g, 1)
 
         g = QGroupBox("Preparazione immagine")
@@ -229,6 +233,7 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.v_orig, self.v_prep, self.v_sim, self.v_err = (ZoomView() for _ in range(4))
         self.palette = PalettePanel(to_pixmap)
+        self.palette.nearest = self._nearest_owned
         self.palette.changed.connect(self._palette_changed)
         self.palette.bt_add.clicked.connect(self.palette_to_db)
         self.ck_auto = QCheckBox("Aggiorna automaticamente l'anteprima quando cambio i colori")
@@ -358,6 +363,60 @@ class MainWindow(QMainWindow):
         self._update_height()
         self.txt.setPlainText("Fotografia caricata.\n" + "\n".join(self.image.notes))
 
+    def _nearest_owned(self, hx: str):
+        from colorforge.color.spaces import delta_e2000, hex_to_srgb
+        owned = [f for f in self.db if f.owned_spools > 0]
+        if not owned:
+            return None, 0.0
+        lab = srgb_to_lab(hex_to_srgb(hx))
+        de = [float(delta_e2000(lab, np.array(f.lab))) for f in owned]
+        i = int(np.argmin(de))
+        return owned[i].label, de[i]
+
+    def suggest_purchases(self):
+        if self.image is None:
+            QMessageBox.information(self, "Suggerimenti", "Carica prima una fotografia.")
+            return
+        owned = [f.id for f in self.db if f.owned_spools > 0]
+        if not owned:
+            QMessageBox.information(self, "Suggerimenti", "Segna prima i filamenti che possiedi in 'I miei filamenti'.")
+            return
+        from colorforge.filaments.database import FilamentDatabase as FDB
+        from colorforge.imaging.preprocess import resize_to_grid
+        from colorforge.optics.km import OpticalModel
+        from colorforge.optimize.regional import suggest_purchases
+        from colorforge.optimize.search import LayerPlan
+        s = self.settings(owned)
+        pal = palette_filaments([hx for hx, _ in __import__("colorforge.pipeline", fromlist=["x"]).image_palette(self.image.srgb, 12)])
+        cand_db = FDB(list(self.db) + [f for f in pal if f.id not in self.db])
+        cands = [f.id for f in self.db if f.owned_spools == 0] + [f.id for f in pal]
+        cap = get_printer(s.printer_id).changer(s.changer_id).capacity or s.max_colors
+        img = self.image.srgb
+        h, w = img.shape[:2]
+        cols = 120
+        target = srgb_to_lab(resize_to_grid(img, cols, max(8, int(cols * h / w))))
+        plan = LayerPlan.from_settings(s.print.first_layer_height_mm, s.print.layer_height_mm,
+                                       s.print.base_thickness_mm, s.print.max_thickness_mm)
+        model = OpticalModel(list(cand_db))
+
+        def work(prog):
+            return suggest_purchases(model, plan, target, owned, cands, min(cap, s.max_colors), progress=prog)
+
+        def show(r):
+            base, cur, sug = r
+            lines = [f"Con i tuoi filamenti attuali: ΔE medio previsto {base:.1f}.", ""]
+            if not sug:
+                lines.append("Nessun filamento in più migliorerebbe in modo apprezzabile questa immagine.")
+            for c, rep, de, gain in sug:
+                f = cand_db.get(c)
+                what = f.label if f.name.startswith("#") else f"{f.label} {srgb_to_hex(f.srgb)}"
+                how = f" al posto di {cand_db.get(rep).label}" if rep else ""
+                lines.append(f"• {what}{how}: ΔE {de:.1f} (−{gain:.1f})")
+            lines += ["", "I colori 'Colore immagine' sono indicativi: cerca un filamento reale simile.",
+                      "Stima basata sui dati dei filamenti; più sono calibrati, più è affidabile."]
+            QMessageBox.information(self, "Filamenti consigliati", "\n".join(lines))
+        self._run_task(work, show, "Ricerca filamenti consigliati")
+
     def open_calibration(self):
         from colorforge.gui.calibration_dialog import CalibrationDialog
         dlg = CalibrationDialog(self.db, self.slots, self, ZoomView)
@@ -369,6 +428,7 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             self.db, self.slots = dlg.db, dlg.slots
             self.refresh_filaments()
+            self.palette.extract()
 
     def _palette_changed(self):
         n = len(self.palette.selected())
