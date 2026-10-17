@@ -60,7 +60,14 @@ report stima.
 - Progetti `.cfproj`, interfaccia grafica con thread, annullamento, zoom, mappa errori
 - Profilo Bambu Lab X2D + 2× AMS 2 Pro (8 slot), volume 256×256×260
 
+**Aggiunto (calibrazione e automazione)**
+- Calibrazione con provino a gradini (foto con raddrizzamento e bilanciamento, oppure colorimetro) → R∞, S, TD per filamento
+- Correzione del modello dal confronto con la foto della stampa reale
+- Filamento posseduto più simile per ogni colore e suggerimento acquisti per l'immagine
+- Pesi su contorni e soggetto; cursore fedeltà/meno cambi; 3 soluzioni proposte; miniatura di prova
+
 **Da fare**
+- Progetto Bambu Studio con filamenti già assegnati (serve un progetto di esempio dell'utente)
 - Fase 6 calibrazione: generazione provini, inserimento misure, stima di `S` e `R∞`
 - Verifica del 3MF in Bambu Studio 2.8.2.60 (serve una prova dell'utente)
 - Costo nella ricerca per preservare dettagli e struttura (oggi SSIM è solo una metrica)

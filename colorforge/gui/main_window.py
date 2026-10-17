@@ -232,13 +232,20 @@ class MainWindow(QMainWindow):
         self.bt_run = QPushButton("▶  Elabora automaticamente")
         self.bt_run.setStyleSheet("font-weight:bold; padding:8px;")
         self.bt_run.clicked.connect(self.start)
+        self.bt_guided = QPushButton("✨  Proponi 3 soluzioni")
+        self.bt_guided.setToolTip("Calcola una versione di massima qualità, una equilibrata e una con pochi cambi, "
+                                  "con tempi e consumi, e ti fa scegliere")
+        self.bt_guided.clicked.connect(self.guided)
+        self.bt_mini = QPushButton("🔬  Miniatura di prova (40 mm)…")
+        self.bt_mini.setToolTip("Stessa soluzione in piccolo, per verificare i colori prima della stampa grande")
+        self.bt_mini.clicked.connect(self.export_miniature)
         self.bt_cancel = QPushButton("Annulla"); self.bt_cancel.setEnabled(False)
         self.bt_cancel.clicked.connect(self.cancel)
         self.bt_3mf = QPushButton("💾  Esporta 3MF per Bambu Studio…"); self.bt_3mf.setEnabled(False)
         self.bt_3mf.clicked.connect(self.export_3mf_file)
         self.bt_export = QPushButton("📁  Esporta tutto (STL, 3MF, istruzioni)…"); self.bt_export.setEnabled(False)
         self.bt_export.clicked.connect(self.export)
-        for w in (self.bt_run, self.bt_cancel, self.bt_3mf, self.bt_export):
+        for w in (self.bt_run, self.bt_guided, self.bt_cancel, self.bt_3mf, self.bt_mini, self.bt_export):
             sl.addWidget(w)
 
         self.tabs = QTabWidget()
@@ -261,7 +268,7 @@ class MainWindow(QMainWindow):
                 cmp_split.addWidget(box)
             else:
                 cmp_split.addWidget(w)
-        cmp_split.setSizes([450, 220, 450])
+        cmp_split.setSizes([430, 270, 430])
         ml.addWidget(cmp_split, 1)
         row = QHBoxLayout(); row.addWidget(self.ck_auto); row.addStretch(1); row.addWidget(self.lb_source)
         ml.addLayout(row)
@@ -646,6 +653,81 @@ class MainWindow(QMainWindow):
         if box.clickedButton() is open_btn:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(paths[0]).parent)))
         self.lb_phase.setText(title + " completata")
+
+    def guided(self):
+        if self.image is None:
+            QMessageBox.information(self, "ColorForge", "Carica prima una fotografia.")
+            return
+        db, fids, _ = self.job_filaments()
+        if not fids:
+            QMessageBox.information(self, "ColorForge", "Seleziona almeno un colore o un filamento.")
+            return
+        import copy
+        base = self.settings(fids)
+        base.max_colors = min(base.max_colors, len(fids))
+        image = self.image
+        variants = [("Massima qualità", 0.0), ("Equilibrata", 0.4), ("Pochi cambi", 0.9)]
+
+        def work(prog):
+            out = []
+            for i, (name, econ) in enumerate(variants):
+                s = copy.deepcopy(base)
+                s.change_economy = econ
+                s.quality = "bilanciata" if s.quality == "massima" else s.quality
+                r = run(image, db, s, progress=lambda p, m, i=i, name=name: prog((i + p) / len(variants), f"{name}: {m}"))
+                out.append((name, r))
+            return out
+
+        def choose(results):
+            from PySide6.QtWidgets import QDialog, QGridLayout
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Scegli la soluzione")
+            g = QGridLayout(dlg)
+            for c, (name, r) in enumerate(results):
+                v = ZoomView(); v.setMinimumSize(260, 320); v.set_image(r.simulated_srgb)
+                e = r.estimate
+                g.addWidget(QLabel(f"<b>{name}</b>"), 0, c)
+                g.addWidget(v, 1, c)
+                g.addWidget(QLabel(f"ΔE medio previsto: <b>{r.metrics['delta_e2000_medio']:.1f}</b><br>"
+                                   f"Filamenti: {len(r.solution.filaments)} · cambi: {e['cambi_colore']}<br>"
+                                   f"Tempo ~{e['tempo_min_stimato']:.0f} min · spurgo ~{e['spurgo_g_stimato']} g<br>"
+                                   f"<small>stime, da verificare con lo slicer</small>"), 2, c)
+                b = QPushButton("Scegli questa")
+                b.clicked.connect(lambda _=False, r=r: (dlg.accept(), self._use_result(r, db)))
+                g.addWidget(b, 3, c)
+            dlg.resize(900, 600)
+            dlg.exec()
+        self._run_task(work, choose, "Calcolo delle 3 soluzioni")
+
+    def _use_result(self, r, db):
+        self.job_db = db
+        self.show_result(r)
+        self.lb_phase.setText("Soluzione scelta: puoi esportarla")
+
+    def export_miniature(self):
+        if not self.result:
+            QMessageBox.information(self, "Miniatura", "Elabora prima l'immagine.")
+            return
+        import copy
+        p, _ = QFileDialog.getSaveFileName(self, "Salva miniatura", str(Path.home() / "colorforge_prova_40mm.3mf"),
+                                           "Progetto 3MF (*.3mf)")
+        if not p:
+            return
+        if not p.lower().endswith(".3mf"):
+            p += ".3mf"
+        s = copy.deepcopy(self.result.settings)
+        s.width_mm, s.height_mm = 40.0, 0.0
+        s.pixel_mm = max(s.pixel_mm, 0.4)
+        db, image = getattr(self, "result_db", self.db), self.image
+        if image is None:
+            QMessageBox.information(self, "Miniatura", "Carica la fotografia originale.")
+            return
+
+        def work(prog):
+            r = run(image, db, s, progress=lambda f, m: prog(f * 0.7, m))
+            export_3mf(r, p, progress=lambda f, m: prog(0.7 + 0.3 * f, m))
+            return p
+        self._run_task(work, lambda path: self._done_msg("Miniatura di prova", [path]), "Miniatura di prova")
 
     def export_3mf_file(self):
         if not self.result:

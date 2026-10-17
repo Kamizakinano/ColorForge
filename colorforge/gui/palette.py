@@ -45,7 +45,7 @@ class PalettePanel(QWidget):
         self.lb_info = QLabel("")
         self.lb_info.setWordWrap(True)
         lay.addWidget(self.lb_info)
-        self.setMinimumWidth(190)
+        self.setMinimumWidth(240)
 
     def set_image(self, srgb: np.ndarray | None):
         self._image = srgb

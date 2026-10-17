@@ -117,3 +117,22 @@ def test_calibration_dialog_photo_flow(app, tmp_path, monkeypatch):
     dlg.save()
     assert db.get("generic-pla-red").km_scattering is not None
     assert (tmp_path / "ColorForge" / "filaments.json").exists()
+
+
+def test_guided_three_solutions(app, tmp_path, monkeypatch):
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    from PySide6.QtWidgets import QDialog
+    import numpy as np
+    from PIL import Image
+    from colorforge.gui.main_window import MainWindow
+    from tests.conftest import make_image
+    shown = []
+    monkeypatch.setattr(QDialog, "exec", lambda self: shown.append(self) or 0)
+    p = tmp_path / "m.png"
+    Image.fromarray((make_image("many").srgb * 255).astype(np.uint8)).save(p)
+    w = MainWindow()
+    w.sp_width.setValue(20); w.sp_pixel.setValue(0.5); w.sp_colors.setValue(4)
+    w.ck_auto.setChecked(False)
+    w.load_image_path(str(p))
+    w.guided()
+    assert _wait(app, lambda: bool(shown), 120)
