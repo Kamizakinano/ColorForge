@@ -284,6 +284,9 @@ class MainWindow(QMainWindow):
         a = QAction("Calibra i filamenti (provino)…", self)
         a.triggered.connect(self.open_calibration)
         cm.addAction(a)
+        a = QAction("Confronta con la stampa reale…", self)
+        a.triggered.connect(self.open_print_feedback)
+        cm.addAction(a)
         m = self.menuBar().addMenu("&File")
         for text, fn in (("Apri fotografia…", self.open_image), ("Apri progetto…", self.open_project),
                          ("Salva progetto…", self.save_project), ("Esporta…", self.export)):
@@ -421,6 +424,19 @@ class MainWindow(QMainWindow):
         from colorforge.gui.calibration_dialog import CalibrationDialog
         dlg = CalibrationDialog(self.db, self.slots, self, ZoomView)
         if dlg.exec():
+            self.refresh_filaments()
+
+    def open_print_feedback(self):
+        if not self.result:
+            QMessageBox.information(self, "Confronto", "Apri o elabora prima il progetto che hai stampato "
+                                    "(File → Apri progetto).")
+            return
+        from colorforge.gui.calibration_dialog import PrintFeedbackDialog
+        db = getattr(self, "result_db", self.db)
+        dlg = PrintFeedbackDialog(self.result, db, self, ZoomView, self._run_task)
+        if dlg.exec():
+            if db is not self.db:
+                self.db.merge(db, overwrite=True)
             self.refresh_filaments()
 
     def edit_filaments(self):

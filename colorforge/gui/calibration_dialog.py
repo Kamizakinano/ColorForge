@@ -319,3 +319,103 @@ class CalibrationDialog(QDialog):
             return
         QMessageBox.information(self, "Calibrazione", f"Aggiornati {len(done)} filamenti su {len(self.fits)}.")
         self.accept()
+
+
+class PrintFeedbackDialog(QDialog):
+    """Confronto tra la stampa reale (foto) e la previsione, con correzione del modello."""
+
+    def __init__(self, res, db, parent, zoom_view_cls, run_task):
+        super().__init__(parent)
+        self.setWindowTitle("Confronta con la stampa reale")
+        self.resize(1200, 720)
+        self.res, self.db, self.run_task = res, db, run_task
+        self.photo, self.corners, self.fit = None, [], None
+        lay = QHBoxLayout(self)
+        left = QVBoxLayout()
+        left.addWidget(QLabel("1. Fotografa la stampa dall'alto, con luce diffusa.\n"
+                              "2. Clicca i 4 angoli dell'immagine stampata.\n"
+                              "3. Il programma confronta i colori reali con quelli previsti e corregge "
+                              "trasparenza e colore dei filamenti usati."))
+        b = QPushButton("Apri foto della stampa…"); b.clicked.connect(self.open_photo); left.addWidget(b)
+        self.lb = QLabel(""); self.lb.setWordWrap(True); left.addWidget(self.lb)
+        b = QPushButton("Ricomincia i clic"); b.clicked.connect(self.reset); left.addWidget(b)
+        b = QPushButton("▶ Confronta e calcola la correzione"); b.clicked.connect(self.compute); left.addWidget(b)
+        self.lb_res = QLabel(""); self.lb_res.setWordWrap(True); left.addWidget(self.lb_res)
+        self.bt_apply = QPushButton("💾 Applica la correzione ai filamenti"); self.bt_apply.setEnabled(False)
+        self.bt_apply.clicked.connect(self.apply); left.addWidget(self.bt_apply)
+        left.addStretch(1)
+        lw = QWidget(); lw.setLayout(left); lw.setMaximumWidth(320)
+        lay.addWidget(lw)
+        self.click = ClickView(zoom_view_cls)
+        self.click.clicked.connect(self.add_corner)
+        lay.addWidget(self.click, 1)
+        self.cmp = zoom_view_cls()
+        lay.addWidget(self.cmp, 1)
+        self.reset()
+
+    def open_photo(self):
+        p, _ = QFileDialog.getOpenFileName(self, "Foto della stampa", str(Path.home()),
+                                           "Immagini (*.png *.jpg *.jpeg *.tif *.tiff *.webp)")
+        if not p:
+            return
+        try:
+            self.photo = load_image(p).srgb
+        except ImageImportError as e:
+            QMessageBox.warning(self, "Foto", str(e))
+            return
+        self.click.view.set_image(self.photo)
+        self.reset()
+
+    def reset(self):
+        self.corners = []
+        self.click.clear_marks()
+        self._hint()
+
+    def _hint(self):
+        names = ["alto a sinistra", "alto a destra", "basso a destra", "basso a sinistra"]
+        if self.photo is None:
+            self.lb.setText("Nessuna foto.")
+        elif len(self.corners) < 4:
+            self.lb.setText(f"Clicca l'angolo <b>{names[len(self.corners)]}</b> dell'immagine stampata.")
+        else:
+            self.lb.setText("Angoli acquisiti.")
+
+    def add_corner(self, x, y):
+        if self.photo is None or len(self.corners) >= 4:
+            return
+        self.corners.append((x, y))
+        self.click.mark(x, y)
+        self._hint()
+
+    def compute(self):
+        if self.photo is None or len(self.corners) != 4:
+            QMessageBox.information(self, "Confronto", "Apri la foto e clicca i 4 angoli.")
+            return
+        from colorforge.calibration.feedback import refit_from_print
+        res, db, photo, corners = self.res, self.db, self.photo, list(self.corners)
+        self.run_task(lambda prog: refit_from_print(res, db, photo, corners), self._done,
+                      "Confronto con la stampa")
+
+    def _done(self, fit):
+        self.fit = fit
+        gap = np.ones((fit["rectified"].shape[0], 4, 3))
+        self.cmp.set_image(np.concatenate([fit["rectified"], gap, self.res.simulated_srgb], 1))
+        better = fit["after"] < fit["before"] - 0.2
+        self.lb_res.setText(f"Differenza media tra stampa reale e previsione su {fit['n']} punti:<br>"
+                            f"<b>prima ΔE {fit['before']:.1f}</b> → <b>dopo la correzione ΔE {fit['after']:.1f}</b><br>"
+                            + ("La correzione migliora il modello." if better else
+                               "Nessun miglioramento significativo: il database non verrà modificato.")
+                            + "<br><small>A destra: stampa raddrizzata | previsione.</small>")
+        self.bt_apply.setEnabled(better)
+
+    def apply(self):
+        from colorforge.calibration.feedback import apply_refit
+        done = apply_refit(self.db, self.fit)
+        try:
+            self.db.save(default_user_db_path())
+        except OSError as e:
+            QMessageBox.warning(self, "Correzione", str(e))
+            return
+        QMessageBox.information(self, "Correzione", f"Aggiornati {len(done)} filamenti. "
+                                "Rielabora l'immagine per usare i nuovi valori.")
+        self.accept()

@@ -69,3 +69,31 @@ def test_unreliable_fit_not_applied(db):
     fits = fit_specimen(spec, lab)
     assert not fits[0].reliable
     assert apply_fits(db, spec, lab, fits, "photo") == []
+
+
+def test_print_feedback_corrects_wrong_parameters(db):
+    """Stampa 'reale' simulata con TD vere diverse da quelle nel database:
+    la correzione deve ridurre l'errore e avvicinare i parametri al vero."""
+    import copy
+    from colorforge.calibration.feedback import apply_refit, refit_from_print, stacks_for, _predict
+    from colorforge.filaments.database import FilamentDatabase
+    from colorforge.pipeline import JobSettings, run
+    from tests.conftest import make_image
+    fids = ["generic-pla-white", "generic-pla-red", "generic-pla-blue", "generic-pla-yellow"]
+    res = run(make_image("many", 80, 60), db, JobSettings(filament_ids=fids, width_mm=40, pixel_mm=0.5,
+                                                          max_colors=4, quality="veloce"))
+    # mondo reale: stessi colori, scattering diverso (TD reale ≠ stimata)
+    truth = FilamentDatabase([copy.deepcopy(db.get(f)) for f in fids])
+    from colorforge.optics.km import OpticalModel
+    m = OpticalModel([db.get(f) for f in fids])
+    used, seg = stacks_for(res)
+    r = np.array([truth.get(f).linear_rgb for f in used])
+    s_true = np.array([m.layers[f].s * 2.5 for f in used])
+    H, W = res.levels.shape
+    real_lin = _predict(r, s_true, seg.reshape(-1, seg.shape[2], 2), 0.0).reshape(H, W, 3)
+    photo = linear_to_srgb(real_lin)
+    corners = [(0, 0), (W, 0), (W, H), (0, H)]
+    fit = refit_from_print(res, db, photo, corners, n_samples=300)
+    assert fit["after"] < fit["before"] * 0.5
+    done = apply_refit(db, fit)
+    assert done and all(db.get(f).km_scattering for f in done)
