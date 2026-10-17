@@ -51,6 +51,8 @@ class JobSettings:
     change_economy: float = 0.3
     # pesi maggiori a contorni, dettagli e soggetto nella scelta dei filamenti
     use_importance: bool = True
+    # usa un solo materiale (quello più presente tra i selezionati): PLA e PETG non aderiscono bene
+    single_material: bool = True
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -119,6 +121,15 @@ def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
     changer = printer.changer(s.changer_id)
     if not s.filament_ids:
         raise ValueError("Nessun filamento selezionato.")
+    if s.single_material:
+        from collections import Counter
+        mats = Counter(db.get(f).material.upper() for f in s.filament_ids)
+        if len(mats) > 1:
+            main = mats.most_common(1)[0][0]
+            dropped = [db.get(f).label for f in s.filament_ids if db.get(f).material.upper() != main]
+            s = __import__("copy").deepcopy(s)
+            s.filament_ids = [f for f in s.filament_ids if db.get(f).material.upper() == main]
+            warnings.append(f"Usato solo {main} (materiali diversi aderiscono male): esclusi " + ", ".join(dropped) + ".")
     filaments = [db.get(f) for f in s.filament_ids]
     max_colors = s.max_colors
     if changer.capacity and max_colors > changer.capacity:
@@ -243,6 +254,10 @@ def _run_zone(image, db, s, model, plan, target_lab, prepared, max_colors, chang
     if reliability < 0.5:
         warnings.append(f"Affidabilità della previsione bassa ({reliability:.2f}): i dati ottici dei "
                         "filamenti sono stimati. Calibrare i filamenti per previsioni attendibili.")
+    mats = {db.get(f).material.upper() for f in chosen}
+    if len(mats) > 1:
+        warnings.append("Materiali diversi nella stessa stampa (" + ", ".join(sorted(mats)) + "): PLA e PETG "
+                        "aderiscono male tra loro. Usa filamenti dello stesso materiale.")
     sol = Solution([(f, 0) for f in chosen], float(err.mean()), float(err.mean()))
     slots = {}
     for f in chosen:
@@ -342,17 +357,36 @@ def band_meshes(res: JobResult) -> list[tuple[str, str, int, Mesh, dict]]:
     return out
 
 
-def export_3mf(res: JobResult, path: str | Path, progress=None) -> dict:
-    """Esporta il solo 3MF multi-oggetto. Ritorna i problemi geometrici per fascia."""
+def export_3mf(res: JobResult, path: str | Path, progress=None, template=None) -> dict:
+    """Esporta il 3MF. Con `template` (progetto Bambu modello) scrive un progetto
+    Bambu Studio con le parti già assegnate agli slot; altrimenti un 3MF standard.
+    Ritorna i problemi geometrici per parte."""
     bands = band_meshes(res)
     problems = {name: validate(m) for name, _, _, m, _ in bands}
+    if template is not None:
+        from colorforge.export.bambu import map_to_template_slots, write_bambu_project
+        mapping = map_to_template_slots([(sw["id"], c) for _, c, _, _, sw in bands], template)
+        parts = []
+        notes = []
+        for name, c, _sl, m, sw in bands:
+            slot, de = mapping[sw["id"]]
+            role = name.rsplit("(", 1)[-1].rstrip(")") if "(" in name else ""
+            parts.append((f"slot {slot} - {sw['filamento']}" + (f" ({role})" if role else ""), slot, m))
+            if de > 5 and f"{sw['filamento']}" not in " ".join(notes):
+                notes.append(f"{sw['filamento']} → slot {slot} (colore diverso, ΔE {de:.0f})")
+        ps = res.settings.print
+        write_bambu_project(parts, path, template, ps.layer_height_mm, ps.first_layer_height_mm,
+                            res.simulated_srgb, Path(path).stem, progress=progress)
+        problems["_slot_mapping"] = notes
+        return problems
     write_3mf([(n, c, sl, m) for n, c, sl, m, _ in bands], path,
               {"Title": Path(path).stem, "Application": f"ColorForge AI {__version__}",
                "Designer": "ColorForge AI"}, progress=progress)
     return problems
 
 
-def export_all(res: JobResult, out_dir: str | Path, stem: str = "colorforge", progress=None) -> dict[str, str]:
+def export_all(res: JobResult, out_dir: str | Path, stem: str = "colorforge", progress=None,
+               template=None) -> dict[str, str]:
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     progress = progress or (lambda p, m: None)
@@ -363,7 +397,7 @@ def export_all(res: JobResult, out_dir: str | Path, stem: str = "colorforge", pr
     write_stl(mesh, p)
     files["stl"] = str(p)
     p = out / f"{stem}.3mf"
-    band_problems = export_3mf(res, p, progress=lambda f, m: progress(0.1 + 0.8 * f, m))
+    band_problems = export_3mf(res, p, progress=lambda f, m: progress(0.1 + 0.8 * f, m), template=template)
     files["3mf"] = str(p)
     for key, arr in (("anteprima", res.simulated_srgb), ("preparata", res.prepared_srgb),
                      ("errori", res.error_map_rgb())):

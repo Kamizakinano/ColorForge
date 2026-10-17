@@ -306,6 +306,9 @@ class MainWindow(QMainWindow):
         a.triggered.connect(self.open_print_feedback)
         cm.addAction(a)
         m = self.menuBar().addMenu("&File")
+        a = QAction("Imposta progetto Bambu di riferimento (i tuoi slot AMS)…", self)
+        a.triggered.connect(self.set_bambu_template)
+        m.addAction(a)
         for text, fn in (("Apri fotografia…", self.open_image), ("Apri progetto…", self.open_project),
                          ("Salva progetto…", self.save_project), ("Esporta…", self.export)):
             a = QAction(text, self)
@@ -443,6 +446,65 @@ class MainWindow(QMainWindow):
                       "Stima basata sui dati dei filamenti; più sono calibrati, più è affidabile."]
             QMessageBox.information(self, "Filamenti consigliati", "\n".join(lines))
         self._run_task(work, show, "Ricerca filamenti consigliati")
+
+    def bambu_template(self):
+        from colorforge import settings as appset
+        from colorforge.export.bambu import load_template
+        p = appset.bambu_template_path()
+        if p is None:
+            return None
+        try:
+            return load_template(p)
+        except ValueError:
+            return None
+
+    def set_bambu_template(self):
+        import shutil
+        from colorforge import settings as appset
+        from colorforge.export.bambu import load_template, template_filaments
+        from colorforge.filaments.database import default_user_db_path
+        p, _ = QFileDialog.getOpenFileName(self, "Progetto Bambu Studio di riferimento", str(Path.home()),
+                                           "Progetto Bambu (*.3mf)")
+        if not p:
+            return
+        try:
+            t = load_template(p)
+        except ValueError as e:
+            QMessageBox.warning(self, "Progetto Bambu", str(e))
+            return
+        dst = appset.app_dir() / "bambu_template.3mf"
+        shutil.copy2(p, dst)
+        cfg = appset.load(); cfg["bambu_template"] = str(dst); appset.save(cfg)
+        only = QMessageBox.question(self, "Filamenti AMS",
+                                    f"Trovati {len(t.filaments)} filamenti negli slot del progetto "
+                                    f"({t.printer}, ugello {t.nozzle} mm).\n\nUsare solo questi come filamenti disponibili?",
+                                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        for f in list(self.db):
+            if f.id.startswith("ams-slot"):
+                self.db.remove(f.id)
+                self.slots.pop(f.id, None)
+            elif only == QMessageBox.StandardButton.Yes:
+                f.owned_spools = 0
+        for fil, slot in template_filaments(t):
+            self.db.add(fil, overwrite=True)
+            self.slots[fil.id] = slot
+        try:
+            self.db.save(default_user_db_path())
+        except OSError as e:
+            QMessageBox.warning(self, "Filamenti", str(e))
+        self.refresh_filaments()
+        self.palette.extract()
+        lay = t.settings.get("layer_height")
+        msg = (f"Progetto di riferimento impostato. Da ora il 3MF esportato si apre in Bambu Studio con ogni parte "
+               f"già assegnata al suo slot.\n\nNel tuo progetto l'altezza strato è {lay} mm: ")
+        try:
+            lay = float(lay)
+            self.sp_layer.setValue(lay)
+            self.sp_base.setValue(max(self.sp_base.value(), lay * 6))
+            msg += "l'ho impostata anche qui."
+        except (TypeError, ValueError):
+            msg += "controllala qui a sinistra."
+        QMessageBox.information(self, "Progetto Bambu", msg)
 
     def open_calibration(self):
         from colorforge.gui.calibration_dialog import CalibrationDialog
@@ -643,10 +705,10 @@ class MainWindow(QMainWindow):
     def _cleanup_bg(self):
         self._bg = [x for x in self._bg if x[0].isRunning()]
 
-    def _done_msg(self, title: str, paths: list[str]):
+    def _done_msg(self, title: str, paths: list[str], extra: list[str] | None = None):
         box = QMessageBox(self)
         box.setWindowTitle(title)
-        box.setText("File salvati:\n" + "\n".join(paths))
+        box.setText("File salvati:\n" + "\n".join(paths) + ("\n" + "\n".join(extra) if extra else ""))
         open_btn = box.addButton("Apri cartella", QMessageBox.ButtonRole.ActionRole)
         box.addButton(QMessageBox.StandardButton.Ok)
         box.exec()
@@ -725,7 +787,7 @@ class MainWindow(QMainWindow):
 
         def work(prog):
             r = run(image, db, s, progress=lambda f, m: prog(f * 0.7, m))
-            export_3mf(r, p, progress=lambda f, m: prog(0.7 + 0.3 * f, m))
+            export_3mf(r, p, progress=lambda f, m: prog(0.7 + 0.3 * f, m), template=self.bambu_template())
             return p
         self._run_task(work, lambda path: self._done_msg("Miniatura di prova", [path]), "Miniatura di prova")
 
@@ -739,8 +801,23 @@ class MainWindow(QMainWindow):
         if not p.lower().endswith(".3mf"):
             p += ".3mf"
         res = self.result
-        self._run_task(lambda prog: (export_3mf(res, p, progress=prog), p)[1],
-                       lambda path: self._done_msg("Esportazione 3MF", [path]), "Esportazione 3MF")
+        tpl = self.bambu_template()
+
+        def work(prog):
+            probs = export_3mf(res, p, progress=prog, template=tpl)
+            return p, probs.get("_slot_mapping", [])
+
+        def done(r):
+            path, notes = r
+            if tpl is None:
+                extra = ["", "Suggerimento: imposta il tuo progetto Bambu (File → Imposta progetto Bambu di "
+                         "riferimento) per avere gli slot già assegnati."]
+            else:
+                extra = ["", "Progetto Bambu Studio: le parti sono già assegnate agli slot AMS."]
+                if notes:
+                    extra += ["Colori senza filamento esatto, assegnati allo slot più simile:"] + notes
+            self._done_msg("Esportazione 3MF", [path], extra)
+        self._run_task(work, done, "Esportazione 3MF")
 
     def export(self):
         if not self.result:
@@ -749,7 +826,8 @@ class MainWindow(QMainWindow):
         if not d:
             return
         res = self.result
-        self._run_task(lambda prog: export_all(res, d, progress=prog),
+        tpl = self.bambu_template()
+        self._run_task(lambda prog: export_all(res, d, progress=prog, template=tpl),
                        lambda files: self._done_msg("Esportazione", list(files.values())), "Esportazione")
 
     def save_project(self):
