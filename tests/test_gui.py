@@ -91,3 +91,29 @@ def test_palette_selection_updates_preview_and_exports_3mf(app, tmp_path, monkey
     # l'interfaccia deve essere aggiornata solo dal thread principale (crash su Windows altrimenti)
     assert seen and all(seen)
     assert not list(tmp_path.glob("*.part"))
+
+
+def test_calibration_dialog_photo_flow(app, tmp_path, monkeypatch):
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    from colorforge.calibration.specimen import SpecimenSpec
+    from colorforge.filaments.database import FilamentDatabase
+    from colorforge.gui.calibration_dialog import CalibrationDialog
+    from colorforge.gui.main_window import ZoomView
+    from tests.test_calibration import BASE, TRUTH, synthetic_photo
+    from PySide6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
+    db = FilamentDatabase.builtin()
+    dlg = CalibrationDialog(db, {}, None, ZoomView)
+    spec = SpecimenSpec(BASE, list(TRUTH))
+    dlg.load_spec(spec)
+    img, corners = synthetic_photo(spec, db.get(BASE).linear_rgb)
+    dlg.photo = img
+    dlg.click.view.set_image(img)
+    for x, y in corners:
+        dlg.add_corner(x, y)
+    dlg.compute()
+    assert dlg.fits and all(f.reliable for f in dlg.fits)
+    dlg.save()
+    assert db.get("generic-pla-red").km_scattering is not None
+    assert (tmp_path / "ColorForge" / "filaments.json").exists()

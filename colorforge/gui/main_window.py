@@ -275,6 +275,10 @@ class MainWindow(QMainWindow):
         self.statusBar().addWidget(self.lb_phase, 1)
         self.statusBar().addPermanentWidget(self.progress)
 
+        cm = self.menuBar().addMenu("&Calibrazione")
+        a = QAction("Calibra i filamenti (provino)…", self)
+        a.triggered.connect(self.open_calibration)
+        cm.addAction(a)
         m = self.menuBar().addMenu("&File")
         for text, fn in (("Apri fotografia…", self.open_image), ("Apri progetto…", self.open_project),
                          ("Salva progetto…", self.save_project), ("Esporta…", self.export)):
@@ -353,6 +357,12 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentWidget(self.v_cmp)
         self._update_height()
         self.txt.setPlainText("Fotografia caricata.\n" + "\n".join(self.image.notes))
+
+    def open_calibration(self):
+        from colorforge.gui.calibration_dialog import CalibrationDialog
+        dlg = CalibrationDialog(self.db, self.slots, self, ZoomView)
+        if dlg.exec():
+            self.refresh_filaments()
 
     def edit_filaments(self):
         dlg = FilamentEditor(self.db, self.slots, self)
