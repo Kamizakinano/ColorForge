@@ -32,6 +32,16 @@ from colorforge.filaments.model import Filament, Reliability
 #: TD generica usata quando il dato reale manca. È un'ipotesi del software,
 #: viene sempre segnalata all'utente e riduce l'affidabilità della previsione.
 DEFAULT_TD_MM = 2.0
+#: Stima della TD dalla luminosità (L*) quando il dato manca: i filamenti scuri
+#: sono molto coprenti, quelli chiari lasciano passare più luce. Ordine di
+#: grandezza tipico dei PLA pigmentati; resta una STIMA da sostituire con la
+#: calibrazione o con il valore dichiarato.
+TD_DARK_MM, TD_LIGHT_MM = 0.4, 3.0
+
+
+def estimated_td(lab_l: float) -> float:
+    t = min(max(lab_l / 100.0, 0.0), 1.0)
+    return TD_DARK_MM + (TD_LIGHT_MM - TD_DARK_MM) * t * t
 #: Contrasto residuo (sfondo bianco vs nero) che definisce la TD nel modello.
 TD_CONTRAST = 0.02
 
@@ -91,10 +101,11 @@ class OpticalModel:
             elif f.td_mm is not None:
                 s, src = scattering_from_td(r_inf, f.td_mm), "td"
             else:
-                s, src = scattering_from_td(r_inf, DEFAULT_TD_MM), "default"
+                td = estimated_td(float(f.lab[0]))
+                s, src = scattering_from_td(r_inf, td), "default"
                 self.warnings.append(
-                    f"{f.label}: TD sconosciuta, usato valore generico {DEFAULT_TD_MM} mm "
-                    "(previsione poco affidabile, calibrare il filamento).")
+                    f"{f.label}: TD sconosciuta, stimata {td:.1f} mm dalla luminosità del colore "
+                    "(previsione poco affidabile: inserisci la TD o calibra il filamento).")
             rel = f.reliability if src != "default" else min(f.reliability, Reliability.ESTIMATED.weight)
             self.layers[f.id] = LayerOptics(f.id, r_inf, s, rel, src)
 
