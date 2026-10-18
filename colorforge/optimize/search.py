@@ -224,39 +224,58 @@ def _neighbours(seq, i, fids, plan):
 def optimize_monotonic(model: OpticalModel, plan: LayerPlan, target_lab: np.ndarray,
                        filament_ids: list[str], max_colors: int, quality: QualityProfile,
                        progress=None, cancelled=None, seed: int = 0, balance: float = 0.5):
-    """Ricerca completa per lo stile HueForge. L'ordine è fissato (dal più scuro al più
-    chiaro), quindi si prova OGNI sottoinsieme di filamenti e per ciascuno si ottimizzano
-    le quote dei cambi (partenza uniforme + discesa coordinata)."""
-    from itertools import combinations
+    """Ricerca completa per lo stile HueForge.
+
+    Struttura come in HueForge: un filamento scuro alla base, il più chiaro in cima,
+    e in mezzo qualsiasi sottoinsieme di filamenti in QUALSIASI ordine (non solo dal
+    più scuro al più chiaro: un azzurro può stare sotto un rosso più scuro). Ogni
+    sequenza parte da quote uniformi e viene ottimizzata con discesa coordinata."""
+    from itertools import permutations
     targets, weights = representative_colors(target_lab, quality.clusters, seed, balance=balance)
     ev = Evaluator(model, plan, targets, weights, quality.change_penalty)
     progress = progress or (lambda p, m: None)
     cancelled = cancelled or (lambda: False)
     lum = {f: float(np.mean(model.layers[f].r_inf)) for f in filament_ids}
     order = sorted(filament_ids, key=lambda f: lum[f])
-    B, top = plan.base_layers, plan.max_layers
-    subsets = [c for k in range(2, min(max_colors, len(order)) + 1) for c in combinations(order, k)]
+    bases = order[:2] if len(order) > 2 else order[:1]
+    top = order[-1]
+    max_mid = {"massima": 4, "bilanciata": 3, "veloce": 2}.get(quality.name, 3)
+    max_mid = max(0, min(max_mid, max_colors - 2))
+    seqs = []
+    for b in bases:
+        rest = [f for f in order if f not in (b, top)]
+        for m in range(0, max_mid + 1):
+            for mid in permutations(rest, m):
+                seqs.append((b,) + mid + (top,))
+                if m + 2 < max_colors:
+                    pass
+        seqs.append((b, top))
+    seqs = list(dict.fromkeys(seqs))
+    B, ztop = plan.base_layers, plan.max_layers
     results = []
-    for n, sub in enumerate(subsets):
+    rounds = 3 if quality.name == "massima" else 2
+    for n, sub in enumerate(seqs):
         if cancelled():
             break
-        if n % 8 == 0:
-            progress(0.1 + 0.65 * n / max(len(subsets), 1), f"Combinazioni di filamenti: {n + 1}/{len(subsets)}")
+        if n % 25 == 0:
+            progress(0.1 + 0.65 * n / max(len(seqs), 1), f"Sequenze di filamenti: {n + 1}/{len(seqs)}")
         k = len(sub)
-        starts = [0] + [int(round(B + (top - B) * i / k)) for i in range(1, k)]
+        starts = [0] + [int(round(B + (ztop - B) * i / k)) for i in range(1, k)]
         for i in range(2, k):
             starts[i] = max(starts[i], starts[i - 1] + 1)
         cur = ev.evaluate(list(zip(sub, starts)))
-        for _ in range(4 if quality.name == "massima" else 2):
+        # discesa coordinata con scansione completa di ogni quota (non solo passi
+        # vicini): un filamento può servire con pochi strati in fondo o molti in alto
+        for _ in range(rounds):
             improved = False
             for i in range(1, k):
-                for d in (-3, -2, -1, 1, 2, 3):
-                    st = list(starts)
-                    st[i] += d
-                    lo = max(B, st[i - 1] + 1)
-                    hi = (st[i + 1] - 1) if i + 1 < k else top - 1
-                    if not lo <= st[i] <= hi:
+                lo = max(B, starts[i - 1] + 1)
+                hi = (starts[i + 1] - 1) if i + 1 < k else ztop - 1
+                for v in range(lo, hi + 1):
+                    if v == starts[i]:
                         continue
+                    st = list(starts)
+                    st[i] = v
                     c = ev.evaluate(list(zip(sub, st)))
                     if c.score < cur.score - 1e-6:
                         cur, starts, improved = c, st, True

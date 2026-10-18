@@ -65,6 +65,18 @@ def km_layer(r_inf: np.ndarray, s: float, d: float, rg: np.ndarray) -> np.ndarra
     return (1 - rg * (a - c)) / (a - rg + c)
 
 
+def blend_layer(r_inf: np.ndarray, td_mm: float, d: float, rg: np.ndarray) -> np.ndarray:
+    """Strato sottile come in HueForge: il colore sotto si attenua in modo esponenziale
+    con lo spessore e a spessore TD ne resta solo TD_CONTRAST. Rispetto a Kubelka-Munk
+    con S ricavata dalla TD, i primi strati coprono molto meno (un azzurro sottile sul
+    nero dà un blu scuro, non subito l'azzurro pieno), come si osserva sulle stampe."""
+    if d <= 0:
+        return np.asarray(rg, dtype=float)
+    k = np.log(1.0 / TD_CONTRAST) / max(td_mm, 1e-3)
+    t = np.exp(-k * d)
+    return r_inf + (np.asarray(rg, dtype=float) - r_inf) * t
+
+
 def scattering_from_td(r_inf: np.ndarray, td_mm: float) -> float:
     """S tale che a spessore TD il contrasto bianco/nero medio scenda a TD_CONTRAST."""
     lo, hi = 1e-3, 1e5  # su x = S * d
@@ -85,6 +97,7 @@ class LayerOptics:
     s: float
     reliability: float
     s_source: str  # "calibration" | "td" | "default"
+    td_mm: float | None = None
 
 
 class OpticalModel:
@@ -96,10 +109,12 @@ class OpticalModel:
         self.warnings: list[str] = []
         for f in filaments:
             r_inf = f.linear_rgb
+            td = None
             if f.km_scattering is not None:
                 s, src = float(f.km_scattering), "calibration"
             elif f.td_mm is not None:
-                s, src = scattering_from_td(r_inf, f.td_mm), "td"
+                td = float(f.td_mm)
+                s, src = scattering_from_td(r_inf, td), "td"
             else:
                 td = estimated_td(float(f.lab[0]))
                 s, src = scattering_from_td(r_inf, td), "default"
@@ -107,10 +122,12 @@ class OpticalModel:
                     f"{f.label}: TD sconosciuta, stimata {td:.1f} mm dalla luminosità del colore "
                     "(previsione poco affidabile: inserisci la TD o calibra il filamento).")
             rel = f.reliability if src != "default" else min(f.reliability, Reliability.ESTIMATED.weight)
-            self.layers[f.id] = LayerOptics(f.id, r_inf, s, rel, src)
+            self.layers[f.id] = LayerOptics(f.id, r_inf, s, rel, src, td)
 
     def layer(self, fid: str, d: float, rg: np.ndarray) -> np.ndarray:
         lo = self.layers[fid]
+        if lo.td_mm is not None:
+            return blend_layer(lo.r_inf, lo.td_mm, d, rg)
         return km_layer(lo.r_inf, lo.s, d, rg)
 
     def stack_lut(self, filament_per_layer: list[str], layer_heights: np.ndarray) -> np.ndarray:

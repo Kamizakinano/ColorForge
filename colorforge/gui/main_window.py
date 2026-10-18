@@ -899,7 +899,8 @@ class MainWindow(QMainWindow):
                     "<th>Slot</th><th align='left'>Uso</th></tr>")
         for i, sw in enumerate(res.swaps):
             where = ("base del pannello" if sw.get("ruolo") == "base" else "zone colorate") if res.zone is not None \
-                else f"dallo strato {sw['strato_inizio']} (z = {sw['z_inizio_mm']} mm)"
+                else (f"al posto di {sw['ruolo'][13:]} in alcune zone" if str(sw.get("ruolo", "")).startswith("alternativa a ")
+                      else f"dallo strato {sw['strato_inizio']} (z = {sw['z_inizio_mm']} mm)")
             bg = "#22252E" if i % 2 else "transparent"
             html.append(f"<tr style='background:{bg}'><td><span style='background:{sw['colore']}'>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>"
                         f" <small>{sw['colore']}</small></td><td>{sw['filamento']}</td><td align='center'><b>{sw['slot']}</b></td>"

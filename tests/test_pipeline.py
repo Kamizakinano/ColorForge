@@ -159,4 +159,24 @@ def test_hueforge_mode_orders_dark_to_light(db):
     from colorforge.color.spaces import srgb_to_lab
     res = run(make_image("many"), db, settings(mode="hueforge", max_colors=4))
     L = [db.get(f).lab[0] for f, _ in res.solution.sequence]
-    assert L == sorted(L) and res.mesh_problems == []
+    assert L[-1] == max(L) and res.mesh_problems == []  # il più chiaro in cima, ordine libero sotto
+
+
+def test_hueforge_alternative_color_keeps_red_and_blue(db, tmp_path):
+    """Rosso e blu di pari luminosità: lo stile HueForge li ottiene con un colore alternativo."""
+    from colorforge.pipeline import band_meshes
+    a = np.ones((60, 80, 3))
+    a[10:50, 5:38] = (0.78, 0.12, 0.12)
+    a[10:50, 42:75] = (0.25, 0.38, 0.72)
+    a[28:32, 5:75] = 0.0
+    res = run(from_pil(Image.fromarray((a * 255).astype(np.uint8))), db,
+              settings(filament_ids=FIDS[:4], mode="hueforge", max_colors=4))
+    used = {sw["id"] for sw in res.swaps}
+    assert {"generic-pla-red", "generic-pla-blue"} <= used
+    bands = band_meshes(res)
+    assert all(validate(m) == [] for _, _, _, m, _ in bands)
+    files = export_all(res, tmp_path)
+    from colorforge.project.session import load_project, save_project
+    save_project(tmp_path / "p.cfproj", res, db)
+    r2, _ = load_project(tmp_path / "p.cfproj")
+    assert len(r2.alt) == len(res.alt)

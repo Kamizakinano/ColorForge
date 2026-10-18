@@ -16,7 +16,7 @@ from colorforge.color.spaces import delta_e2000, linear_to_lab, linear_to_srgb, 
 from colorforge.export.stl import write_stl
 from colorforge.export.threemf import write_3mf
 from colorforge.filaments.database import FilamentDatabase
-from colorforge.geometry.mesh import Mesh, column_mesh, fix_saddles, validate
+from colorforge.geometry.mesh import Mesh, column_mesh, fix_saddles, interval_mesh, validate
 from colorforge.imaging.analysis import analyze
 from colorforge.imaging.importer import LoadedImage
 from colorforge.imaging.preprocess import PrepOptions, prepare, resize_to_grid
@@ -99,6 +99,7 @@ class JobResult:
     swaps: list[dict]
     mesh_problems: list[str]
     elapsed_s: float
+    alt: list | None = field(default=None, repr=False)  # stile HueForge: [(fascia, swap, maschera)]
     zone: dict | None = None   # modalità per zona: {"recipes": RecipeSet, "idx": array}
     objects: dict | None = field(default=None, repr=False)  # mesh per oggetto (cache export)
     user_mask: np.ndarray | None = field(default=None, repr=False)  # pennellate dell'utente
@@ -237,9 +238,24 @@ def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
             lv = smooth_color_levels(target_lab, c.lut_lab, plan.base_layers)
             e = delta_e2000(target_lab, c.lut_lab[lv])
             trial.append((float((e * wimp).sum() / wimp.sum()) + quality.change_penalty * c.changes, id(c), c, lv))
-        _, _, best, levels = min(trial, key=lambda t: t[0])
+        trial.sort(key=lambda t: t[0])
+        # i colori alternativi si provano sulle candidate migliori: una sequenza con meno
+        # filamenti può lasciare posto a un colore per zona e vincere alla fine
+        final = []
+        for sc, _, c, lv in trial[:3]:
+            alt_c, lv_c, alog_c = _alternatives(model, plan, ev, c, lv, target_lab, wimp, s.filament_ids,
+                                                max_colors)
+            lab_c = c.lut_lab[lv_c].copy()
+            for _i, _f, mask, sol_v in alt_c:
+                lab_c[mask] = sol_v.lut_lab[lv_c[mask]]
+            e = delta_e2000(target_lab, lab_c)
+            final.append((float((e * wimp).sum() / wimp.sum()) + quality.change_penalty * c.changes,
+                          len(final), c, lv_c, alt_c, alog_c))
+        _, _, best, levels, alt, alog = min(final, key=lambda t: t[0])
+        log += alog
         log.append(f"Stile HueForge: filamenti dal più scuro al più chiaro, rilievo levigato; provate {len(trial)} combinazioni.")
     else:
+        alt = []
         levels, _ = assign_levels(target_lab, best.lut_lab, plan.base_layers)
         levels, _, msg = smooth_levels(levels, target_lab, best.lut_lab)
         log.append(msg)
@@ -248,8 +264,12 @@ def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
     if nfix:
         log.append(f"Corrette {nfix} celle per garantire una geometria manifold (+1 strato ciascuna).")
     sim_lab = best.lut_lab[levels]
+    sim_lin = best.lut_lin[levels]
+    for _i, _f, mask, sol_v in alt:
+        sim_lab[mask] = sol_v.lut_lab[levels[mask]]
+        sim_lin[mask] = sol_v.lut_lin[levels[mask]]
     err = delta_e2000(target_lab, sim_lab)
-    simulated = linear_to_srgb(best.lut_lin[levels])
+    simulated = linear_to_srgb(sim_lin)
     check()
 
     progress(0.92, "Verifica della geometria")
@@ -270,8 +290,20 @@ def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
         warnings.append(f"Affidabilità della previsione bassa ({reliability:.2f}): i dati ottici dei "
                         "filamenti sono stimati. Calibrare i filamenti per previsioni attendibili.")
     swaps, estimate = _swaps_and_estimate(best, plan, levels, s, db, mesh)
+    res_alt = []
+    used_slots = {sw["slot"] for sw in swaps}
+    for i, f, mask, _sol in alt:
+        fl = db.get(f)
+        slot = s.slots.get(f) or max(used_slots) + 1
+        used_slots.add(slot)
+        base = swaps[i]
+        sw = dict(base, filamento=fl.label, id=f, colore=srgb_to_hex(fl.srgb), materiale=fl.material.upper(),
+                  slot=slot, ruolo=f"alternativa a {base['filamento']}", ordine=len(swaps) + 1)
+        swaps.append(sw)
+        res_alt.append((i, sw, mask))
     res = JobResult(s, plan, best, cands, image.srgb, prepared, levels, simulated, err, reliability,
                     warnings, log, metrics, estimate, swaps, problems, time.time() - t0)
+    res.alt = res_alt
     res.user_mask = user_mask
     return res
 
@@ -413,6 +445,55 @@ def _swaps_and_estimate(sol: Solution, plan: LayerPlan, levels, s: JobSettings, 
     return swaps, estimate
 
 
+def _alternatives(model, plan, ev, best, levels, target_lab, wimp, filament_ids, max_colors,
+                  max_alt: int = 2):
+    """Colori alternativi per zona (come i 'colori dipinti' delle stampe HueForge più
+    curate): in una fascia di strati, dove l'immagine lo chiede, un altro filamento prende
+    il posto di quello della fascia (es. il blu del costume al posto del rosso). Con un
+    solo ordine di filamenti per tutta la stampa due colori di pari luminosità come rosso
+    e blu non possono convivere: così sì, senza cambiare la superficie."""
+    from scipy.ndimage import binary_opening, median_filter
+    from colorforge.optimize.heightmap import smooth_color_levels
+    seq = list(best.sequence)
+    alt, log = [], []
+    cur_e = delta_e2000(target_lab, best.lut_lab[levels])
+    taken = np.zeros(levels.shape, bool)
+    used = {f for f, _ in seq}
+    budget = max(0, max_colors - len(used))
+    for _ in range(min(max_alt, budget)):
+        cand = None
+        for i in range(len(seq)):
+            if any(j == i for j, *_ in alt):
+                continue
+            for f in filament_ids:
+                if f in used:
+                    continue
+                v = seq[:i] + [(f, seq[i][1])] + seq[i + 1:]
+                sol = ev.evaluate(v)
+                lv = smooth_color_levels(target_lab, sol.lut_lab, plan.base_layers)
+                e = delta_e2000(target_lab, sol.lut_lab[lv])
+                # zona compatta, solo dove il miglioramento è netto
+                m = (e < cur_e - 3.0) & ~taken
+                m = median_filter(m.astype(np.uint8), size=5).astype(bool)
+                m = binary_opening(m, iterations=1) & ~taken
+                if m.mean() < 0.005:
+                    continue
+                gain = float(((cur_e - e) * wimp)[m].sum() / wimp.sum())
+                if cand is None or gain > cand[0]:
+                    cand = (gain, i, f, m, sol, lv, e)
+        if cand is None or cand[0] < 0.15:
+            break
+        gain, i, f, m, sol, lv, e = cand
+        levels = np.where(m, lv, levels)
+        cur_e = np.where(m, e, cur_e)
+        taken |= m
+        used.add(f)
+        alt.append((i, f, m, sol))
+        log.append(f"Colore alternativo: {f} al posto di {seq[i][0]} nel {m.mean() * 100:.0f}% "
+                   f"dell'immagine (ΔE00 medio −{gain:.1f} pesato).")
+    return alt, levels, log
+
+
 def band_meshes(res: JobResult) -> list[tuple[str, str, int, Mesh, dict]]:
     """Una mesh chiusa per ogni fascia (cambi per strato) o per ogni
     (ruolo, filamento) (multicolore per zona), per il 3MF multi-materiale."""
@@ -428,14 +509,26 @@ def band_meshes(res: JobResult) -> list[tuple[str, str, int, Mesh, dict]]:
             out.append((f"slot {sw['slot']} - {sw['filamento']} ({role})", sw["colore"], int(sw["slot"]), m, sw))
         return out
     seq = res.solution.sequence
-    for i, sw in enumerate(res.swaps):
+    alts = {i: (sw, mask) for i, sw, mask in (res.alt or [])}
+    for i, sw in enumerate(res.swaps[:len(seq)]):
         a = seq[i][1]
         b = seq[i + 1][1] if i + 1 < len(seq) else res.plan.max_layers
-        rel = np.clip(res.levels, a, b) - a
-        if rel.max() <= 0:
+        top = np.clip(res.levels, a, b)
+        if top.max() <= a:
             continue
-        m = column_mesh(rel, res.settings.pixel_mm, res.plan.z_of_level, level_offset=a)
-        out.append((f"{i + 1:02d} slot {sw['slot']} - {sw['filamento']}", sw["colore"], int(sw["slot"]), m, sw))
+        name = f"{i + 1:02d} slot {sw['slot']} - {sw['filamento']}"
+        if i not in alts:
+            m = column_mesh(top - a, res.settings.pixel_mm, res.plan.z_of_level, level_offset=a)
+            out.append((name, sw["colore"], int(sw["slot"]), m, sw))
+            continue
+        # fascia con colore alternativo in alcune zone: due parti complementari
+        asw, mask = alts[i]
+        lo = np.full(top.shape, a)
+        for nm, w, msk in ((name, sw, ~mask), (f"{i + 1:02d}b slot {asw['slot']} - {asw['filamento']}", asw, mask)):
+            hi = np.where(msk, top, a)
+            if hi.max() > a:
+                out.append((nm, w["colore"], int(w["slot"]), interval_mesh(lo, hi, res.settings.pixel_mm,
+                                                                          res.plan.z_of_level), w))
     return out
 
 
