@@ -89,3 +89,28 @@ def test_purge_cost_and_slice_info(db, tmp_path):
         z.writestr("Metadata/project_settings.config", '{"filament_cost": ["20", "25"]}')
     info = read_slice_info(p)
     assert info["piatti"][0]["tempo_s"] == 3600 and info["piatti"][0]["filamenti"][0]["costo_eur"] == 0.1
+
+
+def test_bambu_export_never_mixes_materials(db, tmp_path):
+    import pytest
+    from colorforge.export.bambu import BambuTemplate, map_to_template_slots
+    from colorforge.pipeline import JobSettings, export_3mf, palette_filaments, run
+    from colorforge.filaments.database import FilamentDatabase
+    from tests.conftest import make_image
+    st = {"filament_colour": ["#FFFFFF", "#F72323", "#1E88E5", "#000000"],
+          "filament_type": ["PLA", "PLA", "PETG", "PLA"], "printable_area": ["0x0", "256x0", "256x256", "0x256"]}
+    t = BambuTemplate("t", st, "02.08.02.60")
+    # un blu dell'immagine non deve finire sullo slot PETG (3) se la stampa è PLA
+    assert map_to_template_slots([("img-1E88E5", "#1E88E5")], t, material="PLA")["img-1E88E5"][0] != 3
+    fil = palette_filaments(["#FFFFFF", "#F72323", "#1E88E5", "#000000"], "PLA")
+    pdb = FilamentDatabase(fil)
+    res = run(make_image("saturated"), pdb, JobSettings(filament_ids=[f.id for f in fil], width_mm=20,
+                                                        pixel_mm=0.5, quality="veloce", material="PLA"))
+    export_3mf(res, tmp_path / "ok.3mf", template=t)          # nessun PETG usato
+    with pytest.raises(ValueError, match="Nessun filamento PETG"):
+        run(make_image("saturated"), pdb, JobSettings(filament_ids=[f.id for f in fil], material="PETG"))
+    from colorforge.export.bambu import write_bambu_project
+    from colorforge.geometry.mesh import column_mesh
+    m = column_mesh(np.full((4, 4), 3), 1.0, z)
+    with pytest.raises(ValueError, match="materiali diversi"):
+        write_bambu_project([("a", 1, m), ("b", 3, m)], tmp_path / "bad.3mf", t, 0.08, 0.16)

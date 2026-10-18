@@ -220,6 +220,11 @@ class MainWindow(QMainWindow):
                                 "cambi filamento.\nPer strato: un colore per strato su tutto il pannello, "
                                 "pochi cambi, colori limitati.")
         self.cb_mode.currentIndexChanged.connect(lambda _i: self._palette_changed())
+        self.cb_mat = QComboBox()
+        for lbl, k in (("Automatico (il più presente)", "auto"), ("Solo PLA", "PLA"), ("Solo PETG", "PETG")):
+            self.cb_mat.addItem(lbl, k)
+        self.cb_mat.setToolTip("Una stampa usa un solo materiale: PLA e PETG non aderiscono tra loro")
+        self.cb_mat.currentIndexChanged.connect(lambda _i: (self.refresh_filaments(), self._palette_changed()))
         self.sl_econ = QSlider(Qt.Orientation.Horizontal)
         self.sl_econ.setRange(0, 100); self.sl_econ.setValue(30)
         self.sl_econ.setToolTip("Sinistra: massima fedeltà (più filamenti e cambi).\n"
@@ -236,7 +241,7 @@ class MainWindow(QMainWindow):
         for lbl, w in (("Larghezza", self.sp_width), ("Altezza (auto)", self.lb_height),
                        ("Risoluzione", self.sp_pixel), ("Altezza strato", self.sp_layer),
                        ("Spessore base", self.sp_base), ("Spessore massimo", self.sp_max),
-                       ("Colori massimi", self.sp_colors), ("Modalità colore", self.cb_mode),
+                       ("Colori massimi", self.sp_colors), ("Materiale", self.cb_mat), ("Modalità colore", self.cb_mode),
                        ("Qualità", self.cb_quality), ("Equilibrio", econ_box), ("", imp_row)):
             f.addRow(lbl, w)
         sl.addWidget(g)
@@ -520,7 +525,7 @@ class MainWindow(QMainWindow):
         altrimenti i filamenti selezionati a sinistra."""
         chosen = self.palette.selected()
         if chosen:
-            fil = palette_filaments(chosen)
+            fil = palette_filaments(chosen, self.cb_mat.currentData())
             return FilamentDatabase(fil), [f.id for f in fil], f"Colori scelti dall'immagine: {len(fil)}"
         ids = self.selected_filaments()
         return self.db, ids, f"I miei filamenti: {len(ids)}"
@@ -530,7 +535,7 @@ class MainWindow(QMainWindow):
                         filament_ids=fids if fids is not None else self.selected_filaments(), slots=dict(self.slots),
                         width_mm=self.sp_width.value(), pixel_mm=self.sp_pixel.value(),
                         max_colors=self.sp_colors.value(), quality=self.cb_quality.currentData(),
-                        mode=self.cb_mode.currentData(),
+                        mode=self.cb_mode.currentData(), material=self.cb_mat.currentData(),
                         change_economy=self.sl_econ.value() / 100, use_importance=self.ck_imp.isChecked(),
                         relief_mm=self.sp_relief.value() if self.ck_relief.isChecked() else 0.0,
                         add_frame=self.ck_frame.isChecked(), add_hook=self.ck_hook.isChecked(),
@@ -566,6 +571,9 @@ class MainWindow(QMainWindow):
     def _nearest_owned(self, hx: str):
         from colorforge.color.spaces import delta_e2000, hex_to_srgb
         owned = [f for f in self.db if f.owned_spools > 0]
+        mat = self.cb_mat.currentData() if hasattr(self, "cb_mat") else "auto"
+        if mat != "auto":
+            owned = [f for f in owned if f.material.upper() == mat]
         if not owned:
             return None, 0.0, None
         lab = srgb_to_lab(hex_to_srgb(hx))

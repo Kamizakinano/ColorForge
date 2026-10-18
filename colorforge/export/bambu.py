@@ -95,6 +95,11 @@ def write_bambu_project(parts: list[tuple[str, int, Mesh]], path: str | Path, te
     for name, slot, _ in parts:
         if not 1 <= slot <= max(n_fil, 1):
             raise ValueError(f"La parte '{name}' usa lo slot {slot}, ma il progetto modello ha {n_fil} filamenti.")
+    types = {template.filaments[slot - 1]["type"].upper() for _, slot, _ in parts if template.filaments}
+    if len(types) > 1:  # controllo finale: mai materiali diversi nella stessa stampa
+        used = ", ".join(f"slot {sl} = {template.filaments[sl - 1]['type']}" for sl in sorted({p[1] for p in parts}))
+        raise ValueError("Esportazione bloccata: la stampa userebbe materiali diversi (" + used + "). "
+                         "Scegli 'Solo PLA' o 'Solo PETG' oppure controlla gli slot.")
     settings = dict(template.settings)
     # le quote dei cambi colore dipendono dall'altezza di strato: devono coincidere
     settings["layer_height"] = f"{layer_height:g}"
@@ -209,11 +214,16 @@ def template_filaments(template: BambuTemplate):
     return out
 
 
-def map_to_template_slots(parts_info: list[tuple[str, str]], template: BambuTemplate) -> dict[str, tuple[int, float]]:
+def map_to_template_slots(parts_info: list[tuple[str, str]], template: BambuTemplate,
+                          material: str | None = None) -> dict[str, tuple[int, float]]:
     """Per ogni (id filamento, colore hex) lo slot del progetto modello: quello
-    dichiarato se l'id viene dal progetto, altrimenti il colore più vicino (ΔE00)."""
+    dichiarato se l'id viene dal progetto, altrimenti il colore più vicino (ΔE00)
+    tra gli slot del materiale della stampa (mai un materiale diverso)."""
     from colorforge.color.spaces import delta_e2000, hex_to_srgb, srgb_to_lab
-    tl = [(f["slot"], srgb_to_lab(hex_to_srgb(f["colour"]))) for f in template.filaments]
+    pool = [f for f in template.filaments if material is None or f["type"].upper() == material.upper()]
+    if material is not None and not pool:
+        raise ValueError(f"Nel progetto Bambu di riferimento non ci sono filamenti {material.upper()} negli AMS.")
+    tl = [(f["slot"], srgb_to_lab(hex_to_srgb(f["colour"]))) for f in pool]
     out = {}
     for fid, hx in parts_info:
         if fid.startswith("ams-slot"):

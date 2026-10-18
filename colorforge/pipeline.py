@@ -53,6 +53,8 @@ class JobSettings:
     use_importance: bool = True
     # usa un solo materiale (quello più presente tra i selezionati): PLA e PETG non aderiscono bene
     single_material: bool = True
+    # materiale della stampa: "auto" (il più presente tra i selezionati), "PLA" o "PETG"
+    material: str = "auto"
     # rilievo 3D (solo modalità per zona): altezza in mm del soggetto sopra lo sfondo, 0 = piatto
     relief_mm: float = 0.0
     # accessori opzionali (generati solo se richiesti)
@@ -134,15 +136,19 @@ def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
     changer = printer.changer(s.changer_id)
     if not s.filament_ids:
         raise ValueError("Nessun filamento selezionato.")
-    if s.single_material:
-        from collections import Counter
-        mats = Counter(db.get(f).material.upper() for f in s.filament_ids)
-        if len(mats) > 1:
-            main = mats.most_common(1)[0][0]
-            dropped = [db.get(f).label for f in s.filament_ids if db.get(f).material.upper() != main]
-            s = __import__("copy").deepcopy(s)
-            s.filament_ids = [f for f in s.filament_ids if db.get(f).material.upper() == main]
-            warnings.append(f"Usato solo {main} (materiali diversi aderiscono male): esclusi " + ", ".join(dropped) + ".")
+    from collections import Counter
+    mats = Counter(db.get(f).material.upper() for f in s.filament_ids)
+    if s.material != "auto":
+        main = s.material.upper()
+        if main not in mats:
+            raise ValueError(f"Nessun filamento {main} selezionato: cambia 'Materiale' o i filamenti.")
+    else:
+        main = mats.most_common(1)[0][0] if s.single_material and len(mats) > 1 else None
+    if main is not None and len(mats) > 1:
+        dropped = [db.get(f).label for f in s.filament_ids if db.get(f).material.upper() != main]
+        s = __import__("copy").deepcopy(s)
+        s.filament_ids = [f for f in s.filament_ids if db.get(f).material.upper() == main]
+        warnings.append(f"Usato solo {main} (materiali diversi aderiscono male): esclusi " + ", ".join(dropped) + ".")
     filaments = [db.get(f) for f in s.filament_ids]
     max_colors = s.max_colors
     if changer.capacity and max_colors > changer.capacity:
@@ -312,6 +318,7 @@ def _run_zone(image, db, s, model, plan, target_lab, prepared, max_colors, chang
     for i, f in enumerate(chosen):
         fl = db.get(f)
         swaps.append({"ordine": i + 1, "filamento": fl.label, "id": f, "colore": srgb_to_hex(fl.srgb),
+                      "materiale": fl.material.upper(),
                       "slot": slots[f], "ruolo": "base" if i == 0 else "zona",
                       "strato_inizio": 1 if i == 0 else plan.base_layers + 1,
                       "z_inizio_mm": 0.0 if i == 0 else round(float(zl(plan.base_layers)), 3),
@@ -353,7 +360,7 @@ def _swaps_and_estimate(sol: Solution, plan: LayerPlan, levels, s: JobSettings, 
         vol = float(thick.sum() * px2)
         est_mass[f.label] = round(vol * f.density_g_cm3 / 1000, 2)
         swaps.append({"ordine": i + 1, "filamento": f.label, "id": fid, "colore": srgb_to_hex(f.srgb),
-                      "slot": auto_slot[fid], "strato_inizio": start + 1,
+                      "materiale": f.material.upper(), "slot": auto_slot[fid], "strato_inizio": start + 1,
                       "z_inizio_mm": round(float(z0), 3), "z_fine_mm": round(float(z1), 3)})
     top = int(levels.max())
     used = [w for w in swaps if w["strato_inizio"] <= top]
@@ -423,7 +430,9 @@ def export_3mf(res: JobResult, path: str | Path, progress=None, template=None) -
     problems = {name: validate(m) for name, _, _, m, _ in bands}
     if template is not None:
         from colorforge.export.bambu import map_to_template_slots, write_bambu_project
-        mapping = map_to_template_slots([(sw["id"], c) for _, c, _, _, sw in bands], template)
+        mats = {db_mat for db_mat in (sw.get("materiale") for _, _, _, _, sw in bands) if db_mat}
+        job_mat = res.settings.material.upper() if res.settings.material != "auto" else (mats.pop() if len(mats) == 1 else None)
+        mapping = map_to_template_slots([(sw["id"], c) for _, c, _, _, sw in bands], template, material=job_mat)
         parts = []
         notes = []
         for name, c, _sl, m, sw in bands:
@@ -484,10 +493,11 @@ def image_palette(srgb: np.ndarray, k: int = 16, seed: int = 0) -> list[tuple[st
     return [(srgb_to_hex(lab_to_srgb(cent[i])), float(wts[i])) for i in order]
 
 
-def palette_filaments(hex_colors: list[str]):
+def palette_filaments(hex_colors: list[str], material: str = "PLA"):
     """Filamenti temporanei dai colori scelti nella tavolozza (dati ottici stimati)."""
     from colorforge.filaments.model import Filament, Reliability
     return [Filament.from_hex(f"img-{h.lstrip('#').upper()}", "Colore immagine", h.upper(), h,
+                              material=(material if material != "auto" else "PLA").upper(),
                               color_reliability=Reliability.ESTIMATED,
                               source="Colore estratto dalla foto, non un filamento misurato")
             for h in hex_colors]
