@@ -65,7 +65,7 @@ def stacks_for(res) -> tuple[list[str], np.ndarray]:
 def pick_samples(pred_lab: np.ndarray, n: int = 600, seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
     """Pixel in zone uniformi (bassa varianza locale della previsione), ben distribuiti."""
     var = _local_std(pred_lab)
-    ok = var < np.percentile(var, 40)
+    ok = var <= np.percentile(var, 40)
     ys, xs = np.nonzero(ok)
     rng = np.random.default_rng(seed)
     if len(ys) > n:
@@ -98,6 +98,8 @@ def refit_from_print(res, db, photo_srgb, corners_px, n_samples: int = 500, reg:
     rect = ndimage.uniform_filter(rect, (3, 3, 1))
     pred_lab = linear_to_lab(srgb_to_linear(np.clip(res.simulated_srgb, 0, 1)))
     ys, xs = pick_samples(pred_lab, n_samples)
+    if len(ys) < 20:
+        raise ValueError("Troppo pochi punti uniformi per il confronto: usa una stampa con zone di colore più ampie.")
     fids, seg = stacks_for(res)
     segs = seg[ys, xs]
     obs_lin = srgb_to_linear(rect[ys, xs])

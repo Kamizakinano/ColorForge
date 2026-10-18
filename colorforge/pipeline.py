@@ -55,6 +55,8 @@ class JobSettings:
     single_material: bool = True
     # materiale della stampa: "auto" (il più presente tra i selezionati), "PLA" o "PETG"
     material: str = "auto"
+    # superficie superiore piana (stessa altezza ovunque): niente "colonnine" nello slicer
+    flat_top: bool = True
     # rilievo 3D (solo modalità per zona): altezza in mm del soggetto sopra lo sfondo, 0 = piatto
     relief_mm: float = 0.0
     # accessori opzionali (generati solo se richiesti)
@@ -257,10 +259,10 @@ def _run_zone(image, db, s, model, plan, target_lab, prepared, max_colors, chang
         weights = weights / weights.mean()
     chosen, _ = choose_filaments(model, plan, target_lab, s.filament_ids, max_colors,
                                  progress=progress, seed=s.seed, weights=weights,
-                                 economy=s.change_economy)
+                                 economy=s.change_economy, flat=s.flat_top)
     check()
     progress(0.72, "Calcolo delle combinazioni di strati")
-    rs = build_recipes(model, plan, chosen, 0, step=1 if s.quality == "massima" else 2)
+    rs = build_recipes(model, plan, chosen, 0, step=1 if s.quality == "massima" else 2, flat=s.flat_top)
     progress(0.78, "Assegnazione dei colori per zona")
     idx, _ = nearest_recipes(target_lab, rs)
     idx, nclean, _ = clean_recipes(idx, rs, plan.base_layers, target_lab)
@@ -501,6 +503,29 @@ def palette_filaments(hex_colors: list[str], material: str = "PLA"):
                               color_reliability=Reliability.ESTIMATED,
                               source="Colore estratto dalla foto, non un filamento misurato")
             for h in hex_colors]
+
+
+def snap_palette_to_owned(hex_colors: list[str], owned, material: str = "auto",
+                          far_de: float = 15.0) -> tuple[list[str], list[str]]:
+    """Sostituisce i colori scelti dalla tavolozza con i filamenti posseduti più simili
+    (dello stesso materiale), così l'anteprima usa i filamenti che verranno stampati.
+    Ritorna (id filamenti senza duplicati, note per l'utente)."""
+    from colorforge.color.spaces import delta_e2000, hex_to_srgb
+    pool = [f for f in owned if material == "auto" or f.material.upper() == material.upper()]
+    if not pool:
+        return [], [f"Nessun filamento {material} disponibile tra i tuoi filamenti."]
+    ids, notes = [], []
+    for hx in hex_colors:
+        lab = srgb_to_lab(hex_to_srgb(hx))
+        de = [float(delta_e2000(lab, np.array(f.lab))) for f in pool]
+        i = int(np.argmin(de))
+        f = pool[i]
+        if f.id not in ids:
+            ids.append(f.id)
+        if de[i] > far_de:
+            notes.append(f"Il colore {hx} dell'immagine non ha un filamento simile: usato {f.label} "
+                         f"(ΔE {de[i]:.0f}). Per riprodurlo serve un filamento di quel colore.")
+    return ids, notes
 
 
 def build_report(res: JobResult, band_problems: dict | None = None) -> dict:

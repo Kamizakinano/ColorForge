@@ -524,9 +524,18 @@ class MainWindow(QMainWindow):
         """Filamenti da usare: i colori spuntati nella tavolozza, se ce ne sono,
         altrimenti i filamenti selezionati a sinistra."""
         chosen = self.palette.selected()
+        self._palette_notes = []
         if chosen:
+            owned = [f for f in self.db if f.owned_spools > 0]
+            if self.bambu_template() is not None and owned:
+                # con gli AMS reali: i colori scelti diventano i tuoi filamenti più simili,
+                # così anteprima ed esportazione usano esattamente gli stessi colori
+                from colorforge.pipeline import snap_palette_to_owned
+                ids, notes = snap_palette_to_owned(chosen, owned, self.cb_mat.currentData())
+                self._palette_notes = notes
+                return self.db, ids, f"Colori scelti → tuoi filamenti: {len(ids)}"
             fil = palette_filaments(chosen, self.cb_mat.currentData())
-            return FilamentDatabase(fil), [f.id for f in fil], f"Colori scelti dall'immagine: {len(fil)}"
+            return FilamentDatabase(fil), [f.id for f in fil], f"Colori scelti dall'immagine: {len(fil)} (ipotetici)"
         ids = self.selected_filaments()
         return self.db, ids, f"I miei filamenti: {len(ids)}"
 
@@ -844,6 +853,9 @@ class MainWindow(QMainWindow):
 
     def _on_done(self, res: JobResult):
         self._finish_ui()
+        for n in getattr(self, "_palette_notes", []):
+            if n not in res.warnings:
+                res.warnings.insert(0, n)
         self.progress.setValue(1000)
         self.lb_phase.setText(f"Completato in {res.elapsed_s:.0f} s"
                               + (" (anteprima rapida: premi 'Elabora' per la qualità massima)" if self.auto_run else ""))

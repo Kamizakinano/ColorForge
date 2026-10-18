@@ -41,8 +41,11 @@ def test_zone_mode_reproduces_distinct_colors(db):
 
 
 def test_gradient_black_white_is_accurate(db):
-    res = run(make_image("gradient"), db, settings(filament_ids=FIDS[:2], quality="bilanciata"))
+    res = run(make_image("gradient"), db, settings(filament_ids=FIDS[:2], quality="bilanciata", flat_top=False))
     assert res.metrics["delta_e2000_medio"] < 6
+    flat = run(make_image("gradient"), db, settings(filament_ids=FIDS[:2], quality="bilanciata"))
+    assert flat.metrics["delta_e2000_medio"] < 9
+    assert len(np.unique(flat.levels)) == 1          # superficie piana: una sola altezza
 
 
 def test_repeatable(db):
@@ -142,3 +145,11 @@ def test_brush_protect_improves_painted_area(db):
     zone = (slice(0, 15), slice(0, 22))
     assert b.error_de[zone].mean() <= a.error_de[zone].mean() + 0.05
     assert b.user_mask is not None
+
+
+def test_palette_snaps_to_owned_filaments(db):
+    from colorforge.pipeline import snap_palette_to_owned
+    owned = [db.get(f) for f in ("generic-pla-white", "generic-pla-black", "generic-pla-red")]
+    ids, notes = snap_palette_to_owned(["#F5F5F5", "#C41E2A", "#1E4FBB"], owned, "PLA")
+    assert ids[:2] == ["generic-pla-white", "generic-pla-red"]
+    assert any("#1E4FBB" in n for n in notes)       # nessun blu tra i posseduti: segnalato

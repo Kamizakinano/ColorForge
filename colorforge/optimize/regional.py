@@ -38,7 +38,10 @@ class RecipeSet:
 
 
 def build_recipes(model: OpticalModel, plan: LayerPlan, fids: list[str], base: int,
-                  step: int = 1) -> RecipeSet:
+                  step: int = 1, flat: bool = False) -> RecipeSet:
+    """Tutte le ricette (base + medio a strati + sopra b strati). Con `flat=True`
+    solo ricette con a + b = M: ogni pixel ha la stessa altezza e la superficie
+    superiore è piana (il colore varia con le proporzioni, non con lo spessore)."""
     B = plan.base_layers
     M = plan.max_layers - B
     lh = plan.heights
@@ -63,6 +66,8 @@ def build_recipes(model: OpticalModel, plan: LayerPlan, fids: list[str], base: i
                 if ib == ia:
                     continue
                 b_list = [0] if ib < 0 else [c for c in counts if 0 < c <= M - a]
+                if flat and ib >= 0:
+                    b_list = [M - a] if M - a > 0 else []
                 rb = r
                 done = 0
                 for b in b_list:
@@ -72,6 +77,11 @@ def build_recipes(model: OpticalModel, plan: LayerPlan, fids: list[str], base: i
                     out_fa.append(ia); out_a.append(a); out_fb.append(ib); out_b.append(b); out_lin.append(rb)
                 if ib < 0:
                     out_fa.append(ia); out_a.append(a); out_fb.append(-1); out_b.append(0); out_lin.append(r)
+    if flat:
+        keep = [i for i in range(len(out_a)) if out_a[i] + out_b[i] == M]
+        out_fa = [out_fa[i] for i in keep]; out_a = [out_a[i] for i in keep]
+        out_fb = [out_fb[i] for i in keep]; out_b = [out_b[i] for i in keep]
+        out_lin = [out_lin[i] for i in keep]
     lin = np.array(out_lin)
     lin, idx = np.unique(np.round(lin, 7), axis=0, return_index=True)
     sel = np.sort(idx)
@@ -102,7 +112,7 @@ def nearest_recipes(target_lab: np.ndarray, rs: RecipeSet, k: int = 24,
 
 
 def choose_filaments(model, plan, target_lab, fids, capacity, progress=None, seed=0, weights=None,
-                     economy: float = 0.0):
+                     economy: float = 0.0, flat: bool = False):
     """Sceglie base e sottoinsieme di al più `capacity` filamenti (greedy sul ΔE medio).
     Ogni filamento in più costa circa un cambio per strato: con `economy` > 0 lo si
     aggiunge solo se migliora il ΔE medio di almeno `0.05 + 1.2·economy`."""
@@ -114,7 +124,7 @@ def choose_filaments(model, plan, target_lab, fids, capacity, progress=None, see
 
     def score(idx_list):
         sub = [fids[i] for i in idx_list]
-        rs = build_recipes(model, plan, sub, 0, step=2)
+        rs = build_recipes(model, plan, sub, 0, step=2, flat=flat)
         _, de = nearest_recipes(targets, rs)
         return float(np.sum(w * de))
 
@@ -196,9 +206,9 @@ def build_objects(rs: RecipeSet, idx: np.ndarray, plan: LayerPlan, pixel_mm: flo
             for k, (lo, hi) in objects_intervals(rs, idx, plan.base_layers, lift).items()}
 
 
-def subset_score(model, plan, targets, weights, fids: list[str], base_first: bool = True) -> float:
+def subset_score(model, plan, targets, weights, fids: list[str], base_first: bool = True, flat: bool = False) -> float:
     """ΔE00 medio pesato ottenibile con questi filamenti (modalità per zona)."""
-    rs = build_recipes(model, plan, fids, 0, step=2)
+    rs = build_recipes(model, plan, fids, 0, step=2, flat=flat)
     _, de = nearest_recipes(targets, rs)
     return float(np.sum(weights * de))
 
