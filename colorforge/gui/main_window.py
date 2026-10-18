@@ -153,12 +153,15 @@ class MainWindow(QMainWindow):
     def _build(self):
         side = QWidget()
         sl = QVBoxLayout(side)
+        sl.setSpacing(6)
+        sl.setContentsMargins(6, 6, 6, 6)
         b = QPushButton("📷  Carica fotografia…")
         b.clicked.connect(self.open_image)
         sl.addWidget(b)
 
         g = QGroupBox("Stampante")
         f = QFormLayout(g)
+        f.setVerticalSpacing(4)
         self.cb_printer = QComboBox()
         for p in self.printers:
             self.cb_printer.addItem(p.name, p.id)
@@ -170,6 +173,7 @@ class MainWindow(QMainWindow):
 
         g = QGroupBox("Dimensioni e qualità")
         f = QFormLayout(g)
+        f.setVerticalSpacing(4)
         self.sp_width = QDoubleSpinBox(); self.sp_width.setRange(10, 400); self.sp_width.setValue(100); self.sp_width.setSuffix(" mm")
         self.lb_height = QLabel("-")
         self.sp_pixel = QDoubleSpinBox(); self.sp_pixel.setRange(0.1, 2); self.sp_pixel.setSingleStep(0.05); self.sp_pixel.setValue(0.4); self.sp_pixel.setSuffix(" mm")
@@ -197,55 +201,63 @@ class MainWindow(QMainWindow):
         econ_box = QWidget(); eb = QHBoxLayout(econ_box); eb.setContentsMargins(0, 0, 0, 0)
         eb.addWidget(QLabel("Fedeltà")); eb.addWidget(self.sl_econ, 1); eb.addWidget(QLabel("Meno cambi"))
         self.ck_imp = QCheckBox("Priorità a contorni e soggetto"); self.ck_imp.setChecked(True)
+        imp_row = QWidget(); ir = QHBoxLayout(imp_row); ir.setContentsMargins(0, 0, 0, 0)
+        ir.addWidget(self.ck_imp); ir.addStretch(1); ir.addWidget(self.lb_econ)
         self.sp_width.valueChanged.connect(self._update_height)
         for lbl, w in (("Larghezza", self.sp_width), ("Altezza (auto)", self.lb_height),
                        ("Risoluzione", self.sp_pixel), ("Altezza strato", self.sp_layer),
                        ("Spessore base", self.sp_base), ("Spessore massimo", self.sp_max),
                        ("Colori massimi", self.sp_colors), ("Modalità colore", self.cb_mode),
-                       ("Qualità", self.cb_quality), ("Equilibrio", econ_box), ("", self.lb_econ),
-                       ("", self.ck_imp)):
+                       ("Qualità", self.cb_quality), ("Equilibrio", econ_box), ("", imp_row)):
             f.addRow(lbl, w)
         sl.addWidget(g)
 
         g = QGroupBox("Filamenti disponibili")
         v = QVBoxLayout(g)
         self.lst_fil = QListWidget()
-        self.lst_fil.setMinimumHeight(110)
-        v.addWidget(self.lst_fil)
+        self.lst_fil.setMinimumHeight(96)
+        v.addWidget(self.lst_fil, 1)
+        row = QHBoxLayout()
         b = QPushButton("🎨  I miei filamenti…")
         b.clicked.connect(self.edit_filaments)
-        v.addWidget(b)
-        b = QPushButton("💡  Suggerisci filamenti da acquistare")
+        row.addWidget(b)
+        b = QPushButton("💡  Suggerisci acquisti")
         b.setToolTip("Calcola quali filamenti in più migliorerebbero di più questa immagine")
         b.clicked.connect(self.suggest_purchases)
-        v.addWidget(b)
+        row.addWidget(b)
+        v.addLayout(row)
         sl.addWidget(g, 1)
 
         g = QGroupBox("Preparazione immagine")
-        v = QVBoxLayout(g)
-        self.ck_denoise = QCheckBox("Riduzione rumore"); self.ck_denoise.setChecked(True)
-        self.ck_sharp = QCheckBox("Nitidezza moderata"); self.ck_sharp.setChecked(True)
-        self.ck_contrast = QCheckBox("Contrasto adattivo"); self.ck_contrast.setChecked(True)
+        v = QHBoxLayout(g)
+        self.ck_denoise = QCheckBox("Riduci rumore"); self.ck_denoise.setChecked(True)
+        self.ck_sharp = QCheckBox("Nitidezza"); self.ck_sharp.setChecked(True)
+        self.ck_contrast = QCheckBox("Contrasto"); self.ck_contrast.setChecked(True)
+        self.ck_denoise.setToolTip("Riduzione moderata del rumore")
+        self.ck_sharp.setToolTip("Nitidezza moderata")
+        self.ck_contrast.setToolTip("Contrasto adattivo")
         for w in (self.ck_denoise, self.ck_sharp, self.ck_contrast):
             v.addWidget(w)
         sl.addWidget(g)
 
         g = QGroupBox("Rilievo e accessori (facoltativi)")
-        v = QVBoxLayout(g)
-        rl = QHBoxLayout()
-        self.ck_relief = QCheckBox("Rilievo 3D del soggetto")
+        g.setToolTip("Il rilievo richiede la modalità 'Multicolore per zona'. Gli accessori vengono aggiunti "
+                     "al 3MF solo se spuntati.")
+        from PySide6.QtWidgets import QGridLayout
+        v = QGridLayout(g)
+        self.ck_relief = QCheckBox("Rilievo 3D")
         self.sp_relief = QDoubleSpinBox(); self.sp_relief.setRange(0.5, 15); self.sp_relief.setValue(4.0); self.sp_relief.setSuffix(" mm")
         self.sp_relief.setEnabled(False)
         self.ck_relief.toggled.connect(self.sp_relief.setEnabled)
-        rl.addWidget(self.ck_relief); rl.addWidget(self.sp_relief)
-        v.addLayout(rl)
-        self.ck_frame = QCheckBox("Aggiungi cornice")
-        self.ck_hook = QCheckBox("Aggiungi gancio per appendere")
-        self.ck_stand = QCheckBox("Aggiungi piedini d'appoggio")
-        for w in (self.ck_frame, self.ck_hook, self.ck_stand):
-            v.addWidget(w)
-        v.addWidget(QLabel("<small>Il rilievo richiede la modalità 'Multicolore per zona'. Gli accessori "
-                           "vengono aggiunti al 3MF solo se spuntati.</small>"))
+        self.ck_frame = QCheckBox("Cornice")
+        self.ck_hook = QCheckBox("Gancio")
+        self.ck_stand = QCheckBox("Piedini")
+        self.ck_relief.setToolTip("Il soggetto sporge sopra lo sfondo (solo 'Multicolore per zona')")
+        self.ck_frame.setToolTip("Cornice intorno al pannello")
+        self.ck_hook.setToolTip("Linguetta con foro per appendere")
+        self.ck_stand.setToolTip("Due piedini con fessura per tenerlo in piedi")
+        v.addWidget(self.ck_relief, 0, 0); v.addWidget(self.sp_relief, 0, 1, 1, 2)
+        v.addWidget(self.ck_frame, 1, 0); v.addWidget(self.ck_hook, 1, 1); v.addWidget(self.ck_stand, 1, 2)
         sl.addWidget(g)
 
         self.bt_run = QPushButton("▶  Elabora automaticamente")
@@ -264,8 +276,19 @@ class MainWindow(QMainWindow):
         self.bt_3mf.clicked.connect(self.export_3mf_file)
         self.bt_export = QPushButton("📁  Esporta tutto (STL, 3MF, istruzioni)…"); self.bt_export.setEnabled(False)
         self.bt_export.clicked.connect(self.export)
-        for w in (self.bt_run, self.bt_guided, self.bt_cancel, self.bt_3mf, self.bt_mini, self.bt_export):
-            sl.addWidget(w)
+        bottom = QWidget()
+        bl = QHBoxLayout(bottom)
+        bl.setContentsMargins(8, 6, 8, 6)
+        bl.setSpacing(8)
+        for w, stretch in ((self.bt_run, 3), (self.bt_guided, 2), (self.bt_cancel, 1), (self.bt_mini, 2),
+                           (self.bt_3mf, 3), (self.bt_export, 2)):
+            w.setMinimumHeight(38)
+            bl.addWidget(w, stretch)
+        self.bt_run.setStyleSheet("font-weight:bold; padding:6px;")
+        self.bt_mini.setText("🔬  Miniatura 40 mm…")
+        self.bt_export.setText("📁  Esporta tutto…")
+        self.bt_export.setToolTip("STL, 3MF, istruzioni, anteprime e report in una cartella")
+        self.bt_3mf.setText("💾  Esporta 3MF Bambu…")
 
         self.tabs = QTabWidget()
         self.v_orig, self.v_prep, self.v_sim, self.v_err = (ZoomView() for _ in range(4))
@@ -313,7 +336,13 @@ class MainWindow(QMainWindow):
         split.addWidget(scroll)
         split.addWidget(right)
         split.setSizes([360, 1040])
-        self.setCentralWidget(split)
+        central = QWidget()
+        cl = QVBoxLayout(central)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(0)
+        cl.addWidget(split, 1)
+        cl.addWidget(bottom)
+        self.setCentralWidget(central)
 
         self.progress = QProgressBar(); self.progress.setRange(0, 1000)
         self.lb_phase = QLabel("Pronto")
