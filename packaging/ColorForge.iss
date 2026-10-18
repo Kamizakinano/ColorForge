@@ -17,6 +17,8 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 UninstallDisplayIcon={app}\ColorForge.exe
 SetupIconFile=colorforge.ico
+; avvisa Explorer del cambio icone (aggiorna la cache delle icone)
+ChangesAssociations=yes
 
 [Languages]
 Name: "it"; MessagesFile: "compiler:Languages\Italian.isl"
@@ -28,9 +30,16 @@ Name: "desktopicon"; Description: "Crea un'icona sul desktop"; Flags: unchecked
 Source: "..\dist\ColorForge\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
 [Icons]
-Name: "{group}\ColorForge AI"; Filename: "{app}\ColorForge.exe"
+Name: "{group}\ColorForge AI"; Filename: "{app}\ColorForge.exe"; IconFilename: "{app}\ColorForge.exe"
 Name: "{group}\Disinstalla ColorForge AI"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\ColorForge AI"; Filename: "{app}\ColorForge.exe"; Tasks: desktopicon
+Name: "{autodesktop}\ColorForge AI"; Filename: "{app}\ColorForge.exe"; IconFilename: "{app}\ColorForge.exe"; Tasks: desktopicon
+
+[InstallDelete]
+; i collegamenti vengono ricreati: niente icone vecchie in cache
+Type: files; Name: "{autodesktop}\ColorForge AI.lnk"
+Type: files; Name: "{group}\ColorForge AI.lnk"
 
 [Run]
+Filename: "{sys}\ie4uinit.exe"; Parameters: "-show"; Flags: runhidden nowait skipifdoesntexist
+
 Filename: "{app}\ColorForge.exe"; Description: "Avvia ColorForge AI"; Flags: nowait postinstall skipifsilent
