@@ -24,7 +24,7 @@ ChangesAssociations=yes
 Name: "it"; MessagesFile: "compiler:Languages\Italian.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Crea un'icona sul desktop"; Flags: unchecked
+Name: "desktopicon"; Description: "Crea un'icona sul desktop"
 
 [Files]
 Source: "..\dist\ColorForge\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
