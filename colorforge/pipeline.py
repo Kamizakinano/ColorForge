@@ -470,8 +470,18 @@ def _alternatives(model, plan, ev, best, levels, target_lab, wimp, filament_ids,
                     continue
                 v = seq[:i] + [(f, seq[i][1])] + seq[i + 1:]
                 sol = ev.evaluate(v)
-                lv = smooth_color_levels(target_lab, sol.lut_lab, plan.base_layers)
-                e = delta_e2000(target_lab, sol.lut_lab[lv])
+                # il colore alternativo deve restare in superficie: il pixel finisce dentro la
+                # sua fascia (mai sepolto sotto altri strati, che in stampa lo coprirebbero)
+                a = max(seq[i][1], plan.base_layers) + 1
+                b = seq[i + 1][1] if i + 1 < len(seq) else plan.max_layers
+                if b < a + 1:  # fascia troppo sottile: almeno 2 strati di colore
+                    continue
+                rng = np.arange(a + 1, b + 1)
+                es = np.stack([delta_e2000(target_lab, np.broadcast_to(sol.lut_lab[l], target_lab.shape))
+                               for l in rng])
+                k = es.argmin(0)
+                lv = rng[k]
+                e = np.take_along_axis(es, k[None], 0)[0]
                 # zona compatta, solo dove il miglioramento è netto
                 m = (e < cur_e - 3.0) & ~taken
                 m = median_filter(m.astype(np.uint8), size=5).astype(bool)
