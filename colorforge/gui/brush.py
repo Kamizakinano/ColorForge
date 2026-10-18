@@ -36,7 +36,7 @@ class BrushView(QWidget):
         self.group.button(0).setChecked(True)
         self.group.idClicked.connect(self._set_mode)
         bar.addWidget(QLabel("Pennello"))
-        self.sl = QSlider(Qt.Orientation.Horizontal); self.sl.setRange(3, 80); self.sl.setValue(18)
+        self.sl = QSlider(Qt.Orientation.Horizontal); self.sl.setRange(3, 80); self.sl.setValue(18); self.sl.setMinimumWidth(90)
         self.sl.valueChanged.connect(lambda v: setattr(self, "radius", v))
         bar.addWidget(self.sl, 1)
         clr = QPushButton("Pulisci"); clr.clicked.connect(self.clear); bar.addWidget(clr)

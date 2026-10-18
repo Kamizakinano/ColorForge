@@ -39,8 +39,18 @@ def main() -> int:
     from importlib import resources
     from PySide6.QtGui import QIcon
     app.setWindowIcon(QIcon(str(resources.files("colorforge.data").joinpath("icon.png"))))
+    from colorforge import settings as appset
+    from colorforge.gui.theme import apply_theme
+    cfg = appset.load()
+    apply_theme(app, bool(cfg.get("dark", False)))
     w = MainWindow()
     w.show()
+    if not cfg.get("guide_shown"):
+        cfg["guide_shown"] = True
+        appset.save(cfg)
+        w.show_guide()
+    if cfg.get("check_updates", True):
+        w.check_updates(False)
     if len(sys.argv) > 1:
         w.load_image_path(sys.argv[1])
     return app.exec()

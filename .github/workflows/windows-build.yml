@@ -30,6 +30,10 @@ jobs:
       - name: Test automatici
         run: python -m pytest -q
 
+      - name: Numero di build
+        shell: pwsh
+        run: Set-Content -Path colorforge/_build.py -Value "BUILD = $env:GITHUB_RUN_NUMBER"
+
       - name: Eseguibile (PyInstaller)
         run: >
           pyinstaller packaging/colorforge_app.py --name ColorForge --noconfirm --windowed --icon packaging/colorforge.ico

@@ -308,7 +308,7 @@ class MainWindow(QMainWindow):
         scroll.setWidget(side)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setMinimumWidth(340)
+        scroll.setMinimumWidth(370)
         split = QSplitter()
         split.addWidget(scroll)
         split.addWidget(right)
@@ -320,6 +320,20 @@ class MainWindow(QMainWindow):
         self.statusBar().addWidget(self.lb_phase, 1)
         self.statusBar().addPermanentWidget(self.progress)
 
+        vm = self.menuBar().addMenu("&Visualizza")
+        from colorforge import settings as appset
+        self.act_dark = QAction("Tema scuro", self, checkable=True)
+        self.act_dark.setChecked(bool(appset.load().get("dark", False)))
+        self.act_dark.toggled.connect(self.set_dark)
+        vm.addAction(self.act_dark)
+        self.act_upd = QAction("Controlla aggiornamenti all'avvio", self, checkable=True)
+        self.act_upd.setChecked(bool(appset.load().get("check_updates", True)))
+        self.act_upd.toggled.connect(lambda v: self._save_pref("check_updates", v))
+        vm.addAction(self.act_upd)
+        hm = self.menuBar().addMenu("&Aiuto")
+        a = QAction("Guida rapida", self); a.triggered.connect(self.show_guide); hm.addAction(a)
+        a = QAction("Controlla aggiornamenti ora", self); a.triggered.connect(lambda: self.check_updates(True)); hm.addAction(a)
+        a = QAction("Informazioni su ColorForge AI", self); a.triggered.connect(self.show_about); hm.addAction(a)
         cm = self.menuBar().addMenu("&Calibrazione")
         a = QAction("Calibra i filamenti (provino)…", self)
         a.triggered.connect(self.open_calibration)
@@ -339,9 +353,62 @@ class MainWindow(QMainWindow):
             a = QAction(text, self)
             a.triggered.connect(fn)
             m.addAction(a)
+        mb = self.menuBar()   # ordine dei menu: File, Calibrazione, Visualizza, Aiuto
+        acts = {a.text().replace("&", ""): a for a in mb.actions()}
+        for name in ("File", "Calibrazione", "Visualizza", "Aiuto"):
+            if name in acts:
+                mb.removeAction(acts[name]); mb.addAction(acts[name])
         self._printer_changed()
 
     # --- stato -------------------------------------------------------------
+    def _save_pref(self, k, v):
+        from colorforge import settings as appset
+        cfg = appset.load(); cfg[k] = v; appset.save(cfg)
+
+    def set_dark(self, on: bool):
+        from colorforge.gui.theme import apply_theme
+        apply_theme(QApplication.instance(), on)
+        self._save_pref("dark", on)
+
+    def show_guide(self):
+        from colorforge.gui.theme import GUIDE_HTML
+        box = QMessageBox(self); box.setWindowTitle("Guida rapida"); box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(GUIDE_HTML); box.exec()
+
+    def show_about(self):
+        from colorforge import __version__
+        from colorforge._build import BUILD
+        QMessageBox.about(self, "ColorForge AI", f"<b>ColorForge AI</b><br>Versione {__version__} (build {BUILD})<br>"
+                          "Da fotografia a stampa 3D multicolore. Elaborazione locale, nessuna foto inviata in rete.")
+
+    def check_updates(self, manual: bool = False):
+        """Chiede a GitHub solo il numero dell'ultima versione pubblicata (nessun dato inviato)."""
+        from colorforge.gui.theme import fetch_latest_release
+        from colorforge._build import BUILD
+
+        def done(info):
+            if not info:
+                if manual:
+                    QMessageBox.information(self, "Aggiornamenti", "Impossibile controllare gli aggiornamenti (rete non disponibile?).")
+                return
+            num, url = info
+            if num > BUILD:
+                box = QMessageBox(self); box.setWindowTitle("Aggiornamento disponibile")
+                box.setText(f"È disponibile la versione 0.1.{num} (installata: build {BUILD}).")
+                b = box.addButton("Scarica", QMessageBox.ButtonRole.AcceptRole); box.addButton(QMessageBox.StandardButton.Close)
+                box.exec()
+                if box.clickedButton() is b:
+                    QDesktopServices.openUrl(QUrl(url))
+            elif manual:
+                QMessageBox.information(self, "Aggiornamenti", "Hai già l'ultima versione.")
+        th = QThread(self); wk = TaskWorker(lambda prog: fetch_latest_release())
+        wk.moveToThread(th)
+        relay = Relay(lambda p, m: None, done, lambda m: done(None), self)
+        th.started.connect(wk.run); wk.done.connect(relay.done); wk.failed.connect(relay.failed)
+        wk.done.connect(th.quit); wk.failed.connect(th.quit)
+        self._bg.append((th, wk, relay)); th.finished.connect(self._cleanup_bg)
+        th.start()
+
     def _econ_label(self, v):
         txt = ("massima fedeltà" if v < 10 else "equilibrato" if v < 50 else
                "pochi cambi" if v < 85 else "minimo dei cambi")
@@ -728,6 +795,8 @@ class MainWindow(QMainWindow):
         html.append(f"</ol><p>Altezza {e['altezza_totale_mm']} mm · {e['numero_strati']} strati · "
                     f"{e['cambi_colore']} cambi · ~{e['tempo_min_stimato']:.0f} min (stima)</p>")
         html.append(self._cost_html(res))
+        from colorforge.calibration.feedback import printer_reliability
+        html.append(f"<p><small>{printer_reliability(getattr(self, 'result_db', self.db))['testo']}</small></p>")
         if res.warnings:
             html.append("<p><b>Avvisi:</b></p><ul>" + "".join(f"<li>{w}</li>" for w in res.warnings) + "</ul>")
         html.append("<p><b>Operazioni:</b></p><ul>" + "".join(f"<li>{w}</li>" for w in res.log) + "</ul>")

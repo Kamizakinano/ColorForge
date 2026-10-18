@@ -40,7 +40,8 @@ class FilamentEditor(QDialog):
         lay.addWidget(self.table)
         row = QHBoxLayout()
         for text, fn in (("Aggiungi", self.add_row), ("Duplica", self.duplicate), ("Elimina", self.delete),
-                         ("Importa…", self.import_db), ("Esporta…", self.export_db)):
+                         ("Importa…", self.import_db), ("Esporta…", self.export_db),
+                         ("Importa CSV…", self.import_csv), ("Esporta CSV…", self.export_csv)):
             b = QPushButton(text)
             b.clicked.connect(fn)
             row.addWidget(b)
@@ -196,3 +197,39 @@ class FilamentEditor(QDialog):
                 self.collect().save(p)
             except (ValueError, OSError) as e:
                 QMessageBox.warning(self, "Esportazione", str(e))
+
+    def import_csv(self):
+        from colorforge.filaments.csv_io import read_csv
+        p, _ = QFileDialog.getOpenFileName(self, "Importa libreria CSV", "", "CSV (*.csv *.txt)")
+        if not p:
+            return
+        try:
+            with open(p, encoding="utf-8-sig") as fh:
+                items, errors = read_csv(fh.read())
+        except (OSError, UnicodeDecodeError) as e:
+            QMessageBox.warning(self, "CSV", f"Impossibile leggere il file: {e}")
+            return
+        existing = {self._id(r) for r in range(self.table.rowCount())}
+        added = 0
+        for f, slot in items:
+            if f.id in existing:
+                continue
+            if slot:
+                self.slots[f.id] = slot
+            self._append(f)
+            added += 1
+        msg = f"Importati {added} filamenti (valori dichiarati, non misurati)."
+        if errors:
+            msg += "\n\nRighe scartate:\n" + "\n".join(errors[:15])
+        QMessageBox.information(self, "CSV", msg)
+
+    def export_csv(self):
+        from colorforge.filaments.csv_io import write_csv
+        p, _ = QFileDialog.getSaveFileName(self, "Esporta CSV", "filamenti.csv", "CSV (*.csv)")
+        if p:
+            try:
+                db = self.collect()
+                with open(p, "w", encoding="utf-8-sig", newline="") as fh:
+                    fh.write(write_csv(list(db), self.slots))
+            except (ValueError, OSError) as e:
+                QMessageBox.warning(self, "CSV", str(e))

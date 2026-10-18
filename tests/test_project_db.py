@@ -42,3 +42,24 @@ def test_invalid_import_rejected():
     with pytest.raises(ValueError):
         FilamentDatabase.from_dict({"format": "colorforge-filaments", "version": 1,
                                     "filaments": [{"id": "x", "brand": "b", "name": "n", "lab": [1, 2]}]})
+
+
+def test_csv_library_import_export():
+    from colorforge.filaments.csv_io import read_csv, write_csv
+    text = "marca;nome;materiale;colore;td;fonte\nBambu Lab;PLA Basic Jade White;PLA;#FFFFFF;0,6;HueForge\n" \
+           "X;Rosso;PLA;#zz0000;;\nY;Blu;PLA;#1F4FA8;abc;\n"
+    items, errs = read_csv(text)
+    assert len(items) == 2 and len(errs) == 2
+    f = items[0][0]
+    assert f.td_mm == 0.6 and f.td_reliability is Reliability.DECLARED and "HueForge" in f.source
+    back, e2 = read_csv(write_csv([f]))
+    assert not e2 and back[0][0].td_mm == 0.6
+
+
+def test_printer_reliability_text():
+    from colorforge.calibration.feedback import printer_reliability
+    db = FilamentDatabase()
+    assert printer_reliability(db)["confronti"] == 0
+    db.calibration_history.append({"method": "print_feedback", "before": 9.0, "after": 3.5})
+    r = printer_reliability(db)
+    assert r["confronti"] == 1 and "3.5" in r["testo"]

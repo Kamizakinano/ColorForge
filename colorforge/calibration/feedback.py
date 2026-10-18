@@ -154,3 +154,20 @@ def apply_refit(db, fit: dict, project_note: str = "") -> list[str]:
                                    "before": round(fit["before"], 2), "after": round(fit["after"], 2),
                                    "filaments": done})
     return done
+
+
+def printer_reliability(db) -> dict:
+    """Quanto sono precise le previsioni sulla stampante dell'utente, dai confronti
+    con stampe reali già fatti (storico 'print_feedback')."""
+    fb = [h for h in db.calibration_history if h.get("method") == "print_feedback"]
+    if not fb:
+        return {"confronti": 0, "testo": "Precisione sulla tua stampante non ancora verificata: dopo una stampa "
+                                          "usa Calibrazione → Confronta con la stampa reale."}
+    after = [float(h.get("after", 0)) for h in fb]
+    before = [float(h.get("before", 0)) for h in fb]
+    last = after[-1]
+    level = "ottima" if last < 3 else "buona" if last < 6 else "da migliorare"
+    return {"confronti": len(fb), "dE_ultimo": last, "dE_medio": sum(after) / len(after),
+            "miglioramento_medio": sum(b - a for a, b in zip(after, before)) / len(fb),
+            "testo": (f"Precisione verificata sulla tua stampante: {level} — differenza tipica tra previsione e "
+                      f"stampa ΔE ≈ {last:.1f} (basata su {len(fb)} confront{'o' if len(fb) == 1 else 'i'}).")}
