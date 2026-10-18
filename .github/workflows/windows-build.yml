@@ -32,7 +32,7 @@ jobs:
 
       - name: Eseguibile (PyInstaller)
         run: >
-          pyinstaller packaging/colorforge_app.py --name ColorForge --noconfirm --windowed
+          pyinstaller packaging/colorforge_app.py --name ColorForge --noconfirm --windowed --icon packaging/colorforge.ico
           --paths . --add-data "colorforge/data;colorforge/data"
           --collect-submodules colorforge --collect-submodules skimage --collect-submodules numpy --collect-data skimage
           --exclude-module tkinter --exclude-module matplotlib

@@ -36,6 +36,9 @@ def main() -> int:
     from colorforge.gui.main_window import MainWindow
     app = QApplication(sys.argv)
     app.setApplicationName("ColorForge AI")
+    from importlib import resources
+    from PySide6.QtGui import QIcon
+    app.setWindowIcon(QIcon(str(resources.files("colorforge.data").joinpath("icon.png"))))
     w = MainWindow()
     w.show()
     if len(sys.argv) > 1:
