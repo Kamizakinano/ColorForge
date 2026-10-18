@@ -14,7 +14,6 @@ SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
-PrivilegesRequiredOverridesAllowed=dialog
 UninstallDisplayIcon={app}\ColorForge.exe
 SetupIconFile=colorforge.ico
 ; avvisa Explorer del cambio icone (aggiorna la cache delle icone)
