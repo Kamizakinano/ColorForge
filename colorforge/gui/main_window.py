@@ -60,15 +60,16 @@ class Worker(QObject):
     done = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, image, db, settings):
+    def __init__(self, image, db, settings, user_mask=None):
         super().__init__()
         self.image, self.db, self.settings = image, db, settings
+        self.user_mask = user_mask
         self.cancel = False
 
     def run(self):
         try:
             res = run(self.image, self.db, self.settings, progress=self.progress.emit,
-                      cancelled=lambda: self.cancel)
+                      cancelled=lambda: self.cancel, user_mask=self.user_mask)
             self.done.emit(res)
         except Cancelled:
             self.failed.emit("Elaborazione annullata.")
@@ -278,8 +279,11 @@ class MainWindow(QMainWindow):
         main = QWidget()
         ml = QVBoxLayout(main)
         ml.setContentsMargins(0, 0, 0, 0)
+        from colorforge.gui.brush import BrushView
+        self.brush = BrushView(self.v_orig)
+        self.brush.changed.connect(self._brush_changed)
         cmp_split = QSplitter()
-        for w, title in ((self.v_orig, "Originale"), (self.palette, None), (self.v_sim, "Risultato previsto")):
+        for w, title in ((self.brush, "Originale · pennello"), (self.palette, None), (self.v_sim, "Risultato previsto")):
             if title:
                 box = QWidget(); bl = QVBoxLayout(box); bl.setContentsMargins(0, 0, 0, 0)
                 bl.addWidget(QLabel(f"<b>{title}</b>")); bl.addWidget(w)
@@ -410,7 +414,7 @@ class MainWindow(QMainWindow):
         except ImageImportError as e:
             QMessageBox.warning(self, "Fotografia", str(e))
             return
-        self.v_orig.set_image(self.image.srgb)
+        self.brush.set_image(self.image.srgb)
         self.v_sim.set_image(None)
         self.palette.set_image(self.image.srgb)
         self.tabs.setCurrentWidget(self.v_cmp)
@@ -595,6 +599,10 @@ class MainWindow(QMainWindow):
             self.refresh_filaments()
             self.palette.extract()
 
+    def _brush_changed(self):
+        if self.image is not None and self.ck_auto.isChecked() and self.result is not None:
+            self.auto_timer.start()
+
     def _palette_changed(self):
         n = len(self.palette.selected())
         self.lb_source.setText(f"Colori scelti: {n}" if n else "Nessun colore scelto: uso i miei filamenti")
@@ -645,7 +653,7 @@ class MainWindow(QMainWindow):
         self.bt_export.setEnabled(False); self.bt_3mf.setEnabled(False)
         self.job_db = db
         self.thread = QThread(self)
-        self.worker = Worker(self.image, db, s)
+        self.worker = Worker(self.image, db, s, self.brush.user_mask())
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.run)
         self.worker.progress.connect(self._on_progress)
@@ -697,7 +705,8 @@ class MainWindow(QMainWindow):
         self.bt_export.setEnabled(True); self.bt_3mf.setEnabled(True)
         first = self.v_orig.item.pixmap().isNull()
         if first:
-            self.v_orig.set_image(res.original_srgb)
+            self.brush.set_image(res.original_srgb)
+            self.brush.set_mask(getattr(res, "user_mask", None))
         self.v_prep.set_image(res.prepared_srgb)
         self.v_sim.set_image(res.simulated_srgb)
         self.v_err.set_image(res.error_map_rgb())
@@ -792,6 +801,7 @@ class MainWindow(QMainWindow):
         base = self.settings(fids)
         base.max_colors = min(base.max_colors, len(fids))
         image = self.image
+        umask = self.brush.user_mask()
         variants = [("Massima qualità", 0.0), ("Equilibrata", 0.4), ("Pochi cambi", 0.9)]
 
         def work(prog):
@@ -800,7 +810,8 @@ class MainWindow(QMainWindow):
                 s = copy.deepcopy(base)
                 s.change_economy = econ
                 s.quality = "bilanciata" if s.quality == "massima" else s.quality
-                r = run(image, db, s, progress=lambda p, m, i=i, name=name: prog((i + p) / len(variants), f"{name}: {m}"))
+                r = run(image, db, s, progress=lambda p, m, i=i, name=name: prog((i + p) / len(variants), f"{name}: {m}"),
+                        user_mask=umask)
                 out.append((name, r))
             return out
 
@@ -845,12 +856,13 @@ class MainWindow(QMainWindow):
         s.width_mm, s.height_mm = 40.0, 0.0
         s.pixel_mm = max(s.pixel_mm, 0.4)
         db, image = getattr(self, "result_db", self.db), self.image
+        umask = getattr(self.result, "user_mask", None)
         if image is None:
             QMessageBox.information(self, "Miniatura", "Carica la fotografia originale.")
             return
 
         def work(prog):
-            r = run(image, db, s, progress=lambda f, m: prog(f * 0.7, m))
+            r = run(image, db, s, progress=lambda f, m: prog(f * 0.7, m), user_mask=umask)
             export_3mf(r, p, progress=lambda f, m: prog(0.7 + 0.3 * f, m), template=self.bambu_template())
             return p
         self._run_task(work, lambda path: self._done_msg("Miniatura di prova", [path]), "Miniatura di prova")

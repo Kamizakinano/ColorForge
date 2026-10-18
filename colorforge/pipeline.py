@@ -96,6 +96,7 @@ class JobResult:
     elapsed_s: float
     zone: dict | None = None   # modalità per zona: {"recipes": RecipeSet, "idx": array}
     objects: dict | None = field(default=None, repr=False)  # mesh per oggetto (cache export)
+    user_mask: np.ndarray | None = field(default=None, repr=False)  # pennellate dell'utente
 
     def error_map_rgb(self, vmax: float = 20.0) -> np.ndarray:
         t = np.clip(self.error_de / vmax, 0, 1)[..., None]
@@ -112,9 +113,14 @@ def _grid_size(img: np.ndarray, s: JobSettings) -> tuple[int, int, float, float]
     return cols, rows, cols * s.pixel_mm, rows * s.pixel_mm
 
 
+PROTECT, SIMPLIFY = 1, 2
+
+
 def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
         progress: Callable[[float, str], None] | None = None,
-        cancelled: Callable[[], bool] | None = None) -> JobResult:
+        cancelled: Callable[[], bool] | None = None, user_mask: np.ndarray | None = None) -> JobResult:
+    """`user_mask` (stessa forma della foto o qualsiasi, 0/1/2): zone dipinte col pennello,
+    1 = proteggi (massima fedeltà, soggetto del rilievo), 2 = semplifica."""
     t0 = time.time()
     progress = progress or (lambda p, m: None)
     cancelled = cancelled or (lambda: False)
@@ -162,6 +168,16 @@ def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
     prepared, plog = prepare(small, s.prep, alpha=alpha)
     log += plog
     target_lab = srgb_to_lab(prepared)
+    brush = None
+    if user_mask is not None and np.any(user_mask):
+        from PIL import Image as _I
+        brush = np.asarray(_I.fromarray(np.asarray(user_mask, np.uint8)).resize((cols, rows), _I.Resampling.NEAREST))
+        simp = brush == SIMPLIFY
+        if simp.any():
+            from scipy import ndimage as _nd
+            sm = np.stack([_nd.gaussian_filter(target_lab[..., c], 2.0) for c in range(3)], -1)
+            target_lab = np.where(simp[..., None], sm, target_lab)
+        log.append(f"Pennello: {np.mean(brush == PROTECT) * 100:.0f}% protetto, {np.mean(simp) * 100:.0f}% semplificato.")
 
     model = OpticalModel(filaments, background=s.background_reflectance)
     warnings += model.warnings
@@ -170,8 +186,10 @@ def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
     quality = QualityProfile.get(s.quality)
     check()
     if s.mode == "zone":
-        return _run_zone(image, db, s, model, plan, target_lab, prepared, max_colors, changer,
-                         warnings, log, progress, check, t0)
+        res = _run_zone(image, db, s, model, plan, target_lab, prepared, max_colors, changer,
+                        warnings, log, progress, check, t0, brush)
+        res.user_mask = user_mask
+        return res
     if s.relief_mm > 0:
         warnings.append("Il rilievo 3D è disponibile solo in modalità 'Multicolore per zona': ignorato.")
     best, cands, ev = optimize(model, plan, target_lab, s.filament_ids, max_colors, quality,
@@ -213,18 +231,24 @@ def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
         warnings.append(f"Affidabilità della previsione bassa ({reliability:.2f}): i dati ottici dei "
                         "filamenti sono stimati. Calibrare i filamenti per previsioni attendibili.")
     swaps, estimate = _swaps_and_estimate(best, plan, levels, s, db, mesh)
-    return JobResult(s, plan, best, cands, image.srgb, prepared, levels, simulated, err, reliability,
-                     warnings, log, metrics, estimate, swaps, problems, time.time() - t0)
+    res = JobResult(s, plan, best, cands, image.srgb, prepared, levels, simulated, err, reliability,
+                    warnings, log, metrics, estimate, swaps, problems, time.time() - t0)
+    res.user_mask = user_mask
+    return res
 
 
 def _run_zone(image, db, s, model, plan, target_lab, prepared, max_colors, changer,
-              warnings, log, progress, check, t0) -> JobResult:
+              warnings, log, progress, check, t0, brush=None) -> JobResult:
     from colorforge.imaging.analysis import importance_map
     from colorforge.optimize.regional import (build_objects, build_recipes, choose_filaments,
                                               clean_recipes, layer_changes, nearest_recipes,
                                               reduce_changes)
     progress(0.15, "Scelta dei filamenti")
     weights = importance_map(prepared) if s.use_importance else None
+    if brush is not None:
+        weights = np.ones(brush.shape) if weights is None else weights
+        weights = weights * np.where(brush == PROTECT, 4.0, np.where(brush == SIMPLIFY, 0.3, 1.0))
+        weights = weights / weights.mean()
     chosen, _ = choose_filaments(model, plan, target_lab, s.filament_ids, max_colors,
                                  progress=progress, seed=s.seed, weights=weights,
                                  economy=s.change_economy)
@@ -252,7 +276,7 @@ def _run_zone(image, db, s, model, plan, target_lab, prepared, max_colors, chang
     lift = None
     if s.relief_mm > 0:
         from colorforge.imaging.analysis import relief_map, subject_mask_robust
-        subj = subject_mask_robust(prepared)
+        subj = (brush == PROTECT) if brush is not None and np.any(brush == PROTECT) else subject_mask_robust(prepared)
         rel = relief_map(prepared, subj, s.relief_mm, s.pixel_mm)
         lift = np.rint(rel / plan.layer_mm).astype(np.int64)
         levels = levels + lift

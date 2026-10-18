@@ -67,6 +67,8 @@ def save_project(path: str | Path, res: JobResult, db: FilamentDatabase, history
             z.writestr("lut_lin.npy", _npy(res.solution.lut_lin))
             z.writestr("lut_lab.npy", _npy(res.solution.lut_lab))
         z.writestr("error_de.npy", _npy(res.error_de.astype(np.float32)))
+        if getattr(res, "user_mask", None) is not None:
+            z.writestr("user_mask.npy", _npy(np.asarray(res.user_mask, np.uint8)))
         if res.zone is not None:
             rs = res.zone["recipes"]
             z.writestr("zone.json", json.dumps({"fids": rs.fids, "base": rs.base}))
@@ -119,4 +121,6 @@ def load_project(path: str | Path) -> tuple[JobResult, FilamentDatabase]:
                         npy("levels.npy"), img("simulated.png"), npy("error_de.npy").astype(float),
                         r["reliability"], r["warnings"], r["log"], r["metrics"], r["estimate"], r["swaps"],
                         r["mesh_problems"], r["elapsed_s"], zone=zone)
+        if "user_mask.npy" in names:
+            res.user_mask = npy("user_mask.npy")
     return res, fdb

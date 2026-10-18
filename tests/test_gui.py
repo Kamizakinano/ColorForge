@@ -136,3 +136,21 @@ def test_guided_three_solutions(app, tmp_path, monkeypatch):
     w.load_image_path(str(p))
     w.guided()
     assert _wait(app, lambda: bool(shown), 120)
+
+
+def test_brush_paints_mask(app, tmp_path, monkeypatch):
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    from PySide6.QtCore import QPointF
+    from colorforge.gui.main_window import MainWindow
+    from tests.conftest import make_image
+    import numpy as np
+    from PIL import Image
+    p = tmp_path / "b.png"
+    Image.fromarray((make_image("many").srgb * 255).astype(np.uint8)).save(p)
+    w = MainWindow(); w.resize(1200, 800); w.show(); app.processEvents()
+    w.load_image_path(str(p))
+    w.brush._set_mode(1)
+    w.brush._paint(QPointF(w.brush.view.viewport().width() / 2, w.brush.view.viewport().height() / 2))
+    assert w.brush.user_mask() is not None and (w.brush.user_mask() == 1).any()
+    w.brush.clear()
+    assert w.brush.user_mask() is None

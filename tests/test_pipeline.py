@@ -129,3 +129,16 @@ def test_accessories_only_when_requested(db, tmp_path):
 def _x(fn, res, path):
     fn(res, path)
     return path
+
+
+def test_brush_protect_improves_painted_area(db):
+    import numpy as np
+    from colorforge.pipeline import PROTECT
+    img = make_image("many", 80, 60)
+    m = np.zeros(img.srgb.shape[:2], np.uint8); m[:20, :30] = PROTECT
+    s = settings(max_colors=3, change_economy=0.8)
+    a = run(img, db, s)
+    b = run(img, db, s, user_mask=m)
+    zone = (slice(0, 15), slice(0, 22))
+    assert b.error_de[zone].mean() <= a.error_de[zone].mean() + 0.05
+    assert b.user_mask is not None
