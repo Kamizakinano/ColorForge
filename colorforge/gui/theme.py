@@ -19,11 +19,58 @@ GUIDE_HTML = """<h3>ColorForge AI in 6 passi</h3><ol>
 <b>Confronta con la stampa reale</b>.</p>"""
 
 
+ACCENT = "#FF7846"
+
+_COMMON = """
+QGroupBox { font-weight: 600; border: 1px solid {line}; border-radius: 8px; margin-top: 10px; padding-top: 2px; }
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: {accent}; }
+QPushButton { border: 1px solid {line}; border-radius: 6px; padding: 5px 10px; background: {button}; }
+QPushButton:hover { border-color: {accent}; }
+QPushButton:pressed, QPushButton:checked { background: {pressed}; border-color: {accent}; }
+QPushButton:disabled { color: {muted}; border-color: {line}; }
+QPushButton#primary { background: {accent}; color: #1B1F2A; font-weight: 700; border: none; }
+QPushButton#primary:hover { background: #FF8C62; }
+QPushButton#primary:disabled { background: {line}; color: {muted}; }
+QTabBar::tab { padding: 6px 14px; border: none; border-bottom: 2px solid transparent; background: transparent; }
+QTabBar::tab:selected { border-bottom: 2px solid {accent}; color: {accent}; font-weight: 600; }
+QHeaderView::section { background: {header}; border: none; border-bottom: 1px solid {line}; padding: 5px; font-weight: 600; }
+QTableWidget, QListWidget, QTextEdit { border: 1px solid {line}; border-radius: 6px; gridline-color: {line}; }
+QComboBox, QSpinBox, QDoubleSpinBox { border: 1px solid {line}; border-radius: 5px; padding: 1px 6px; background: {field}; min-height: 20px; }
+QTableWidget QSpinBox, QTableWidget QDoubleSpinBox, QTableWidget QComboBox { border: none; border-radius: 0; background: transparent; }
+QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover { border-color: {accent}; }
+QProgressBar { border: 1px solid {line}; border-radius: 5px; text-align: center; background: {field}; }
+QProgressBar::chunk { background: {accent}; border-radius: 4px; }
+QSlider::groove:horizontal { height: 4px; background: {line}; border-radius: 2px; }
+QSlider::handle:horizontal { width: 14px; margin: -6px 0; border-radius: 7px; background: {accent}; }
+QSlider::sub-page:horizontal { background: {accent}; border-radius: 2px; }
+QCheckBox::indicator, QListView::indicator, QTableView::indicator { width: 14px; height: 14px;
+    border: 1px solid {ind}; border-radius: 3px; background: {field}; }
+QCheckBox::indicator:checked, QListView::indicator:checked, QTableView::indicator:checked {
+    background: {accent}; border-color: {accent}; }
+QCheckBox::indicator:disabled { border-color: {line}; }
+QToolTip { border: 1px solid {accent}; padding: 4px; }
+QStatusBar { border-top: 1px solid {line}; }
+"""
+
+DARK_TOKENS = dict(accent=ACCENT, line="#3A3F4D", button="#2A2E3A", pressed="#3A2E2A", muted="#6D7280",
+                   header="#262A35", field="#16181E", ind="#9097A6")
+LIGHT_TOKENS = dict(accent="#E8602C", line="#D3D7E0", button="#FFFFFF", pressed="#FFE6DC", muted="#A0A4AE",
+                    header="#EEF0F4", field="#FFFFFF", ind="#7A808C")
+
+
+def stylesheet(dark: bool) -> str:
+    t = DARK_TOKENS if dark else LIGHT_TOKENS
+    out = _COMMON
+    for k, v in t.items():
+        out = out.replace("{" + k + "}", v)
+    return out
+
+
 def apply_theme(app, dark: bool) -> None:
     app.setStyle("Fusion")
     if not dark:
         app.setPalette(app.style().standardPalette())
-        app.setStyleSheet("")
+        app.setStyleSheet(stylesheet(False))
         return
     p = QPalette()
     base, alt, text = QColor(30, 32, 40), QColor(40, 43, 54), QColor(225, 228, 235)
@@ -37,11 +84,18 @@ def apply_theme(app, dark: bool) -> None:
     p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text, QColor(120, 120, 130))
     p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor(120, 120, 130))
     app.setPalette(p)
-    app.setStyleSheet(
-        "QCheckBox::indicator, QListView::indicator, QTableView::indicator { width: 14px; height: 14px; border: 1px solid #9097A6;"
-        " border-radius: 3px; background: #16181E; }"
-        "QCheckBox::indicator:checked, QListView::indicator:checked, QTableView::indicator:checked { background: #FF7846; border-color: #FF7846; }"
-        "QCheckBox::indicator:disabled { border-color: #50545E; }")
+    app.setStyleSheet(stylesheet(True))
+
+
+def quality_badge(de: float) -> tuple[str, str]:
+    """(testo, colore) per un valore ΔE medio previsto."""
+    if de < 3:
+        return "Eccellente", "#2E9E44"
+    if de < 6:
+        return "Buona", "#5BAA3C"
+    if de < 10:
+        return "Discreta", "#D9A400"
+    return "Bassa", "#C62828"
 
 
 def fetch_latest_release(timeout: float = 6.0):

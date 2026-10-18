@@ -290,7 +290,6 @@ class MainWindow(QMainWindow):
         sl.addWidget(g)
 
         self.bt_run = QPushButton("▶  Elabora automaticamente")
-        self.bt_run.setStyleSheet("font-weight:bold; padding:8px;")
         self.bt_run.clicked.connect(self.start)
         self.bt_guided = QPushButton("✨  Proponi 3 soluzioni")
         self.bt_guided.setToolTip("Calcola una versione di massima qualità, una equilibrata e una con pochi cambi, "
@@ -313,7 +312,7 @@ class MainWindow(QMainWindow):
                            (self.bt_3mf, 3), (self.bt_export, 2)):
             w.setMinimumHeight(38)
             bl.addWidget(w, stretch)
-        self.bt_run.setStyleSheet("font-weight:bold; padding:6px;")
+        self.bt_run.setObjectName("primary")
         self.bt_mini.setText("🔬  Miniatura 40 mm…")
         self.bt_export.setText("📁  Esporta tutto…")
         self.bt_export.setToolTip("STL, 3MF, istruzioni, anteprime e report in una cartella")
@@ -399,7 +398,7 @@ class MainWindow(QMainWindow):
         vm = self.menuBar().addMenu("&Visualizza")
         from colorforge import settings as appset
         self.act_dark = QAction("Tema scuro", self, checkable=True)
-        self.act_dark.setChecked(bool(appset.load().get("dark", False)))
+        self.act_dark.setChecked(bool(appset.load().get("dark", True)))
         self.act_dark.toggled.connect(self.set_dark)
         vm.addAction(self.act_dark)
         self.act_upd = QAction("Controlla aggiornamenti all'avvio", self, checkable=True)
@@ -857,25 +856,40 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentWidget(self.v_cmp)
         r = build_report(res)
         m = res.metrics
-        html = [f"<h3>Risultato previsto (simulazione, non garanzia del risultato fisico)</h3>",
-                f"<p>ΔE2000 medio <b>{m['delta_e2000_medio']:.2f}</b> · 95° percentile {m['delta_e2000_p95']:.2f} · "
-                f"SSIM {m['ssim_luminanza']:.3f} · affidabilità dati <b>{res.reliability:.2f}</b></p>",
-                ("<p><b>Filamenti usati (multicolore per zona) — assegna ogni parte del 3MF allo slot indicato:</b></p><ol>"
-                 if res.zone is not None else "<p><b>Sequenza filamenti (dal basso):</b></p><ol>")]
-        for sw in res.swaps:
-            where = ("base del pannello" if sw.get("ruolo") == "base" else "nelle zone") if res.zone is not None \
-                else f"dallo strato {sw['strato_inizio']} (z={sw['z_inizio_mm']} mm)"
-            html.append(f"<li><span style='background:{sw['colore']}'>&nbsp;&nbsp;&nbsp;&nbsp;</span> "
-                        f"{sw['filamento']} — slot {sw['slot']} — {where}</li>")
+        from colorforge.gui.theme import quality_badge
         e = r["stima_stampa"]
-        html.append(f"</ol><p>Altezza {e['altezza_totale_mm']} mm · {e['numero_strati']} strati · "
-                    f"{e['cambi_colore']} cambi · ~{e['tempo_min_stimato']:.0f} min (stima)</p>")
+        q, qc = quality_badge(m["delta_e2000_medio"])
+
+        def tile(title, value, sub, color="#3A3F4D"):
+            return (f"<td width='25%' style='padding:4px'><table width='100%' cellpadding='8' "
+                    f"style='background:{color}; border-radius:6px'><tr><td><small>{title}</small><br>"
+                    f"<span style='font-size:16pt; font-weight:700'>{value}</span><br><small>{sub}</small></td></tr></table></td>")
+        h, mn = divmod(int(e["tempo_min_stimato"]), 60)
+        html = ["<table width='100%' cellspacing='0'><tr>",
+                tile("Fedeltà prevista", q, f"ΔE medio {m['delta_e2000_medio']:.1f} · 95% sotto {m['delta_e2000_p95']:.0f}", qc),
+                tile("Filamenti", str(len(res.solution.filaments)), "multicolore per zona" if res.zone is not None else "cambi per strato"),
+                tile("Cambi filamento", str(e["cambi_colore"]), f"{e['numero_strati']} strati · {e['altezza_totale_mm']} mm"),
+                tile("Tempo stimato", f"{h} h {mn:02d}" if h else f"{mn} min", "stima: verifica con lo slicer"),
+                "</tr></table>"]
+        html.append("<p style='margin-top:6px'><b>Filamenti</b> <small>(le parti del 3MF sono assegnate a questi slot)</small></p>"
+                    "<table cellpadding='4' cellspacing='0' width='100%'>"
+                    "<tr style='background:#262A35'><th align='left'>Colore</th><th align='left'>Filamento</th>"
+                    "<th>Slot</th><th align='left'>Uso</th></tr>")
+        for i, sw in enumerate(res.swaps):
+            where = ("base del pannello" if sw.get("ruolo") == "base" else "zone colorate") if res.zone is not None \
+                else f"dallo strato {sw['strato_inizio']} (z = {sw['z_inizio_mm']} mm)"
+            bg = "#22252E" if i % 2 else "transparent"
+            html.append(f"<tr style='background:{bg}'><td><span style='background:{sw['colore']}'>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</span>"
+                        f" <small>{sw['colore']}</small></td><td>{sw['filamento']}</td><td align='center'><b>{sw['slot']}</b></td>"
+                        f"<td>{where}</td></tr>")
+        html.append("</table>")
         html.append(self._cost_html(res))
         from colorforge.calibration.feedback import printer_reliability
-        html.append(f"<p><small>{printer_reliability(getattr(self, 'result_db', self.db))['testo']}</small></p>")
+        html.append(f"<p><small>🎯 {printer_reliability(getattr(self, 'result_db', self.db))['testo']}<br>"
+                    f"Affidabilità dei dati dei filamenti: {res.reliability:.2f} su 1 · simulazione, non garanzia del risultato fisico.</small></p>")
         if res.warnings:
-            html.append("<p><b>Avvisi:</b></p><ul>" + "".join(f"<li>{w}</li>" for w in res.warnings) + "</ul>")
-        html.append("<p><b>Operazioni:</b></p><ul>" + "".join(f"<li>{w}</li>" for w in res.log) + "</ul>")
+            html.append("<p><b>Avvisi</b></p>" + "".join(f"<p style='margin:2px 0'>⚠️ <small>{w}</small></p>" for w in res.warnings))
+        html.append("<p style='color:#8A8F9C'><small><b>Operazioni eseguite:</b> " + " · ".join(res.log) + "</small></p>")
         self.txt.setHtml("".join(html))
 
     def _run_task(self, fn, on_done, title):
@@ -974,7 +988,7 @@ class MainWindow(QMainWindow):
                                    f"Filamenti: {len(r.solution.filaments)} · cambi: {e['cambi_colore']}<br>"
                                    f"Tempo ~{e['tempo_min_stimato']:.0f} min · spurgo ~{e['spurgo_g_stimato']} g<br>"
                                    f"<small>stime, da verificare con lo slicer</small>"), 2, c)
-                b = QPushButton("Scegli questa")
+                b = QPushButton("Scegli questa"); b.setObjectName("primary")
                 b.clicked.connect(lambda _=False, r=r: (dlg.accept(), self._use_result(r, db)))
                 g.addWidget(b, 3, c)
             dlg.resize(900, 600)

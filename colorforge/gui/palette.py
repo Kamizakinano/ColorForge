@@ -42,7 +42,7 @@ class PalettePanel(QWidget):
         top = QHBoxLayout()
         top.addWidget(title, 1)
         top.addWidget(QLabel("Colori:"))
-        self.sp_k = QSpinBox(); self.sp_k.setRange(4, 32); self.sp_k.setValue(16)
+        self.sp_k = QSpinBox(); self.sp_k.setRange(4, 32); self.sp_k.setValue(16); self.sp_k.setMinimumWidth(64)
         self.sp_k.setToolTip("Quanti colori principali estrarre dall'immagine")
         self.sp_k.valueChanged.connect(self.extract)
         top.addWidget(self.sp_k)

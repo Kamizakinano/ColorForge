@@ -36,13 +36,18 @@ def main() -> int:
     from colorforge.gui.main_window import MainWindow
     app = QApplication(sys.argv)
     app.setApplicationName("ColorForge AI")
+    # pulsanti standard di Qt in italiano (Salva, Annulla, Sì, No…)
+    from PySide6.QtCore import QLibraryInfo, QLocale, QTranslator
+    tr = QTranslator(app)
+    if tr.load(QLocale("it_IT"), "qtbase", "_", QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath)):
+        app.installTranslator(tr)
     from importlib import resources
     from PySide6.QtGui import QIcon
     app.setWindowIcon(QIcon(str(resources.files("colorforge.data").joinpath("icon.png"))))
     from colorforge import settings as appset
     from colorforge.gui.theme import apply_theme
     cfg = appset.load()
-    apply_theme(app, bool(cfg.get("dark", False)))
+    apply_theme(app, bool(cfg.get("dark", True)))
     w = MainWindow()
     w.show()
     if not cfg.get("guide_shown"):

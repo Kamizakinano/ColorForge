@@ -96,14 +96,18 @@ class CalibrationDialog(QDialog):
         v.addLayout(f)
         v.addWidget(QLabel("Filamenti da calibrare (massimo 8 per provino):"))
         self.lst = QListWidget()
+        self.lst.setSpacing(2)
+        self.lst.setAlternatingRowColors(True)
+        from PySide6.QtGui import QIcon, QPixmap
         for x in fl:
-            it = QListWidgetItem(f"{x.label}  {srgb_to_hex(x.srgb)}")
+            it = QListWidgetItem(f"  {x.label}   {srgb_to_hex(x.srgb)}")
+            pm = QPixmap(18, 18); pm.fill(QColor(srgb_to_hex(x.srgb))); it.setIcon(QIcon(pm))
             it.setData(Qt.ItemDataRole.UserRole, x.id)
             it.setFlags(it.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             it.setCheckState(Qt.CheckState.Checked if x.owned_spools > 0 else Qt.CheckState.Unchecked)
             self.lst.addItem(it)
         v.addWidget(self.lst, 1)
-        b = QPushButton("Crea provino (3MF)…")
+        b = QPushButton("Crea provino (3MF)…"); b.setObjectName("primary")
         b.clicked.connect(self.create_specimen)
         v.addWidget(b)
         return w
@@ -153,7 +157,7 @@ class CalibrationDialog(QDialog):
                               "di ogni quadratino nella tabella a destra."))
         b = QPushButton("Tabella per colorimetro"); b.clicked.connect(self.show_lab_table); left.addWidget(b)
         left.addStretch(1)
-        b = QPushButton("▶ Calcola i parametri ottici"); b.clicked.connect(self.compute); left.addWidget(b)
+        b = QPushButton("▶ Calcola i parametri ottici"); b.setObjectName("primary"); b.clicked.connect(self.compute); left.addWidget(b)
         lw = QWidget(); lw.setLayout(left); lw.setMaximumWidth(320)
         h.addWidget(lw)
         from colorforge.gui.main_window import ZoomView
@@ -285,12 +289,15 @@ class CalibrationDialog(QDialog):
                                                   "Errore di adattamento ΔE", "Esito"])
         self.res_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.res_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.res_table.setAlternatingRowColors(True)
+        self.res_table.setShowGrid(False)
+        self.res_table.verticalHeader().setVisible(False)
         v.addWidget(self.res_table, 1)
         self.ck_force = QCheckBox("Salva anche le stime segnalate come poco affidabili")
         v.addWidget(self.ck_force)
         v.addWidget(QLabel("Le misure da foto valgono meno di quelle da colorimetro: il software ne tiene conto "
                            "nell'affidabilità delle previsioni."))
-        b = QPushButton("💾 Salva nel database dei filamenti"); b.clicked.connect(self.save)
+        b = QPushButton("💾 Salva nel database dei filamenti"); b.setObjectName("primary"); b.clicked.connect(self.save)
         v.addWidget(b)
         return w
 

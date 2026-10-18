@@ -25,7 +25,7 @@ class FilamentEditor(QDialog):
     def __init__(self, db: FilamentDatabase, slots: dict[str, int], parent=None):
         super().__init__(parent)
         self.setWindowTitle("I miei filamenti")
-        self.resize(1100, 520)
+        self.resize(1180, 560)
         self.db, self.slots = db, dict(slots)
         lay = QVBoxLayout(self)
         lay.addWidget(QLabel(
@@ -37,6 +37,12 @@ class FilamentEditor(QDialog):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        self.table.setWordWrap(False)
+        self.table.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().setDefaultSectionSize(32)
+        self.table.verticalHeader().setVisible(False)
         lay.addWidget(self.table)
         row = QHBoxLayout()
         for text, fn in (("Aggiungi", self.add_row), ("Duplica", self.duplicate), ("Elimina", self.delete),
@@ -48,6 +54,9 @@ class FilamentEditor(QDialog):
         row.addStretch(1)
         lay.addLayout(row)
         bb = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        bb.button(QDialogButtonBox.StandardButton.Save).setText("Salva")
+        bb.button(QDialogButtonBox.StandardButton.Save).setObjectName("primary")
+        bb.button(QDialogButtonBox.StandardButton.Cancel).setText("Annulla")
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
         lay.addWidget(bb)
