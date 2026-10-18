@@ -202,13 +202,13 @@ def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
     if s.relief_mm > 0:
         warnings.append("Il rilievo 3D è disponibile solo in modalità 'Multicolore per zona': ignorato.")
     hue = s.mode == "hueforge"
-    best, cands, ev = optimize(model, plan, target_lab, s.filament_ids, max_colors, quality,
-                               progress=progress, cancelled=cancelled, seed=s.seed, monotonic=hue)
-    if hue:  # più candidate distinte da provare sull'immagine: la migliore per ogni combinazione di filamenti
-        by_combo = {}
-        for c in sorted(ev.cache.values(), key=lambda c: c.score):
-            by_combo.setdefault(tuple(f for f, _ in c.sequence), []).append(c)
-        cands = [v for lst in by_combo.values() for v in lst[:3]][:60]
+    if hue:
+        from colorforge.optimize.search import optimize_monotonic
+        best, cands, ev = optimize_monotonic(model, plan, target_lab, s.filament_ids, max_colors, quality,
+                                             progress=progress, cancelled=cancelled, seed=s.seed)
+    else:
+        best, cands, ev = optimize(model, plan, target_lab, s.filament_ids, max_colors, quality,
+                                   progress=progress, cancelled=cancelled, seed=s.seed)
     check()
     log.append(f"Ottimizzazione '{quality.name}': {ev.evaluations} combinazioni valutate, "
                f"ΔE00 medio sui colori rappresentativi {best.mean_de:.2f}.")
@@ -222,6 +222,14 @@ def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
         # le candidate migliori vengono provate sull'immagine con la stessa regola di quota
         # usata per la stampa; l'errore è pesato su soggetto e contorni (non sullo sfondo)
         wimp = importance_map(prepared) if s.use_importance else np.ones(target_lab.shape[:2])
+        # equilibrio tra colori: un colore che occupa poco (es. il blu del costume) non deve
+        # essere sacrificato a uno sfondo che occupa il 65% dell'immagine
+        from colorforge.optimize.search import representative_colors
+        from scipy.spatial import cKDTree
+        cents, _ = representative_colors(target_lab, 24, s.seed)
+        _, lab_k = cKDTree(cents).query(target_lab.reshape(-1, 3))
+        cnt = np.bincount(lab_k, minlength=len(cents)).astype(float)
+        wimp = wimp * (1.0 / np.sqrt(np.maximum(cnt[lab_k], 1))).reshape(target_lab.shape[:2])
         trial = []
         for c in [best] + [c for c in cands if c is not best]:
             if c.lut_lab is None:

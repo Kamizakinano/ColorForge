@@ -88,7 +88,7 @@ class Solution:
 
 
 def representative_colors(lab_pixels: np.ndarray, k: int, seed: int = 0,
-                          pixel_weights: np.ndarray | None = None):
+                          pixel_weights: np.ndarray | None = None, balance: float = 0.0):
     """k colori rappresentativi (CIELAB) con pesi; deterministico.
     `pixel_weights` dà più importanza a zone (dettagli, soggetto)."""
     x = lab_pixels.reshape(-1, 3)
@@ -101,6 +101,8 @@ def representative_colors(lab_pixels: np.ndarray, k: int, seed: int = 0,
     k = min(k, len(np.unique(np.round(x, 1), axis=0)))
     cent, lbl = kmeans2(x, k, minit="++", seed=seed, iter=20)
     w = np.bincount(lbl, weights=pw, minlength=k).astype(float)
+    if balance > 0:  # 0 = peso proporzionale ai pixel; 1 = ogni colore pesa uguale
+        w = np.where(w > 0, w ** (1 - balance), 0)
     keep = w > 0
     return cent[keep], w[keep] / w.sum()
 
@@ -140,11 +142,11 @@ def optimize(model: OpticalModel, plan: LayerPlan, target_lab: np.ndarray,
              filament_ids: list[str], max_colors: int, quality: QualityProfile,
              progress: Callable[[float, str], None] | None = None,
              cancelled: Callable[[], bool] | None = None,
-             seed: int = 0, monotonic: bool = False) -> tuple[Solution, list[Solution], Evaluator]:
+             seed: int = 0, monotonic: bool = False, balance: float = 0.0) -> tuple[Solution, list[Solution], Evaluator]:
     """Ritorna (migliore, candidate migliori distinte, valutatore).
     `monotonic`: come HueForge, ogni filamento sopra è più chiaro di quello sotto."""
     lum = {f: float(np.mean(model.layers[f].r_inf)) for f in filament_ids}
-    targets, weights = representative_colors(target_lab, quality.clusters, seed)
+    targets, weights = representative_colors(target_lab, quality.clusters, seed, balance=balance)
     ev = Evaluator(model, plan, targets, weights, quality.change_penalty)
     progress = progress or (lambda p, m: None)
     cancelled = cancelled or (lambda: False)
@@ -217,3 +219,49 @@ def _neighbours(seq, i, fids, plan):
         if g != f and (i == 0 or seq[i - 1][0] != g) and (i + 1 >= len(seq) or seq[i + 1][0] != g):
             out.append(seq[:i] + [(g, s)] + seq[i + 1:])
     return out
+
+
+def optimize_monotonic(model: OpticalModel, plan: LayerPlan, target_lab: np.ndarray,
+                       filament_ids: list[str], max_colors: int, quality: QualityProfile,
+                       progress=None, cancelled=None, seed: int = 0, balance: float = 0.5):
+    """Ricerca completa per lo stile HueForge. L'ordine è fissato (dal più scuro al più
+    chiaro), quindi si prova OGNI sottoinsieme di filamenti e per ciascuno si ottimizzano
+    le quote dei cambi (partenza uniforme + discesa coordinata)."""
+    from itertools import combinations
+    targets, weights = representative_colors(target_lab, quality.clusters, seed, balance=balance)
+    ev = Evaluator(model, plan, targets, weights, quality.change_penalty)
+    progress = progress or (lambda p, m: None)
+    cancelled = cancelled or (lambda: False)
+    lum = {f: float(np.mean(model.layers[f].r_inf)) for f in filament_ids}
+    order = sorted(filament_ids, key=lambda f: lum[f])
+    B, top = plan.base_layers, plan.max_layers
+    subsets = [c for k in range(2, min(max_colors, len(order)) + 1) for c in combinations(order, k)]
+    results = []
+    for n, sub in enumerate(subsets):
+        if cancelled():
+            break
+        if n % 8 == 0:
+            progress(0.1 + 0.65 * n / max(len(subsets), 1), f"Combinazioni di filamenti: {n + 1}/{len(subsets)}")
+        k = len(sub)
+        starts = [0] + [int(round(B + (top - B) * i / k)) for i in range(1, k)]
+        for i in range(2, k):
+            starts[i] = max(starts[i], starts[i - 1] + 1)
+        cur = ev.evaluate(list(zip(sub, starts)))
+        for _ in range(4 if quality.name == "massima" else 2):
+            improved = False
+            for i in range(1, k):
+                for d in (-3, -2, -1, 1, 2, 3):
+                    st = list(starts)
+                    st[i] += d
+                    lo = max(B, st[i - 1] + 1)
+                    hi = (st[i + 1] - 1) if i + 1 < k else top - 1
+                    if not lo <= st[i] <= hi:
+                        continue
+                    c = ev.evaluate(list(zip(sub, st)))
+                    if c.score < cur.score - 1e-6:
+                        cur, starts, improved = c, st, True
+            if not improved:
+                break
+        results.append(cur)
+    results.sort(key=lambda c: c.score)
+    return results[0], results[:60], ev
