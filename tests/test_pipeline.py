@@ -11,12 +11,12 @@ FIDS = ["generic-pla-black", "generic-pla-white", "generic-pla-red", "generic-pl
 
 
 def settings(**kw):
-    d = dict(filament_ids=FIDS, width_mm=30, pixel_mm=0.5, max_colors=4, quality="veloce")
+    d = dict(filament_ids=FIDS, width_mm=30, pixel_mm=0.5, max_colors=4, quality="veloce", mode="zone")
     d.update(kw)
     return JobSettings(**d)
 
 
-@pytest.mark.parametrize("mode", ["zone", "layers"])
+@pytest.mark.parametrize("mode", ["zone", "layers", "hueforge"])
 @pytest.mark.parametrize("kind", ["gradient", "bw", "saturated", "many"])
 def test_full_pipeline(db, kind, mode, tmp_path):
     res = run(make_image(kind), db, settings(mode=mode))
@@ -34,7 +34,7 @@ def test_full_pipeline(db, kind, mode, tmp_path):
 def test_zone_mode_reproduces_distinct_colors(db):
     """Rosso, verde e blu affiancati: per zona devono uscire tutti, a strati no."""
     fids = ["generic-pla-white", "generic-pla-red", "generic-pla-green", "generic-pla-blue"]
-    z = run(make_image("saturated"), db, settings(filament_ids=fids, mode="zone"))
+    z = run(make_image("saturated"), db, settings(filament_ids=fids, mode="zone", flat_top=False))
     l = run(make_image("saturated"), db, settings(filament_ids=fids, mode="layers"))
     assert z.metrics["delta_e2000_medio"] < l.metrics["delta_e2000_medio"]
     assert z.mesh_problems == [] and len(z.objects) >= 3
@@ -153,3 +153,10 @@ def test_palette_snaps_to_owned_filaments(db):
     ids, notes = snap_palette_to_owned(["#F5F5F5", "#C41E2A", "#1E4FBB"], owned, "PLA")
     assert ids[:2] == ["generic-pla-white", "generic-pla-red"]
     assert any("#1E4FBB" in n for n in notes)       # nessun blu tra i posseduti: segnalato
+
+
+def test_hueforge_mode_orders_dark_to_light(db):
+    from colorforge.color.spaces import srgb_to_lab
+    res = run(make_image("many"), db, settings(mode="hueforge", max_colors=4))
+    L = [db.get(f).lab[0] for f, _ in res.solution.sequence]
+    assert L == sorted(L) and res.mesh_problems == []

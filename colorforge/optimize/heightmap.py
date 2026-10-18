@@ -42,3 +42,33 @@ def smooth_levels(levels: np.ndarray, target_lab: np.ndarray, lut_lab: np.ndarra
     if err1.mean() <= err0.mean() * (1 + max_increase):
         return sm, err1, f"Livellamento applicato (ΔE medio {err0.mean():.2f} → {err1.mean():.2f})."
     return levels, err0, "Livellamento scartato: peggiorava la fedeltà complessiva."
+
+
+def luminance_levels(target_lab: np.ndarray, lut_lab: np.ndarray, base_layers: int,
+                     smooth_px: float = 0.7, color_weight: float = 1.0) -> np.ndarray:
+    """Quota per pixel in stile HueForge: segue soprattutto la luminosità (più chiaro =
+    più alto), con un piccolo peso sul colore, poi viene levigata per avere un
+    rilievo continuo senza pixel isolati."""
+    cand = lut_lab[base_layers:]
+    h, w = target_lab.shape[:2]
+    x = target_lab.reshape(-1, 3)
+    q = np.round(x).astype(np.int32)
+    uq, inv = np.unique(q, axis=0, return_inverse=True)
+    dL = (uq[:, None, 0] - cand[None, :, 0]) ** 2
+    dC = ((uq[:, None, 1:] - cand[None, :, 1:]) ** 2).sum(-1)
+    best = np.argmin(dL + color_weight * dC, axis=1)
+    lv = best[inv.reshape(-1)].reshape(h, w).astype(float)
+    if smooth_px > 0:
+        lv = ndimage.gaussian_filter(lv, smooth_px)
+    return (np.rint(lv).astype(np.int64) + base_layers)
+
+
+def smooth_color_levels(target_lab: np.ndarray, lut_lab: np.ndarray, base_layers: int,
+                        sigma: float = 0.8) -> np.ndarray:
+    """Quote in stile HueForge: prima la quota più fedele al colore per ogni pixel, poi
+    una levigatura del rilievo (come la sfocatura della mappa di altezza in HueForge),
+    così la superficie è continua e i colori restano quelli giusti."""
+    lv, _ = assign_levels(target_lab, lut_lab, base_layers)
+    # mediana: elimina i pixel isolati senza creare quote intermedie (che cambierebbero colore)
+    lv, _, _ = smooth_levels(lv, target_lab, lut_lab, max_increase=0.08)
+    return lv

@@ -214,11 +214,13 @@ class MainWindow(QMainWindow):
         for lbl, k in QUALITY_LABELS:
             self.cb_quality.addItem(lbl, k)
         self.cb_mode = QComboBox()
+        self.cb_mode.addItem("Stile HueForge (strati e rilievo)", "hueforge")
         self.cb_mode.addItem("Multicolore per zona (AMS)", "zone")
-        self.cb_mode.addItem("Cambi per strato (stile HueForge)", "layers")
-        self.cb_mode.setToolTip("Per zona: filamenti diversi nello stesso strato, molto più fedele ma con più "
-                                "cambi filamento.\nPer strato: un colore per strato su tutto il pannello, "
-                                "pochi cambi, colori limitati.")
+        self.cb_mode.addItem("Cambi per strato (classico)", "layers")
+        self.cb_mode.setToolTip("Stile HueForge: filamenti dal più scuro al più chiaro, un cambio per quota, "
+                                "rilievo morbido; pochi cambi.\nPer zona: filamenti diversi nello stesso strato, "
+                                "superficie piana, più cambi.\nPer strato classico: come HueForge ma senza "
+                                "ordine dal scuro al chiaro.")
         self.cb_mode.currentIndexChanged.connect(lambda _i: self._palette_changed())
         self.cb_mat = QComboBox()
         for lbl, k in (("Automatico (il più presente)", "auto"), ("Solo PLA", "PLA"), ("Solo PETG", "PETG")):

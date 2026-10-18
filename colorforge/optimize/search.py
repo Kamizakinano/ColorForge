@@ -140,15 +140,20 @@ def optimize(model: OpticalModel, plan: LayerPlan, target_lab: np.ndarray,
              filament_ids: list[str], max_colors: int, quality: QualityProfile,
              progress: Callable[[float, str], None] | None = None,
              cancelled: Callable[[], bool] | None = None,
-             seed: int = 0) -> tuple[Solution, list[Solution], Evaluator]:
-    """Ritorna (migliore, candidate migliori distinte, valutatore)."""
+             seed: int = 0, monotonic: bool = False) -> tuple[Solution, list[Solution], Evaluator]:
+    """Ritorna (migliore, candidate migliori distinte, valutatore).
+    `monotonic`: come HueForge, ogni filamento sopra è più chiaro di quello sotto."""
+    lum = {f: float(np.mean(model.layers[f].r_inf)) for f in filament_ids}
     targets, weights = representative_colors(target_lab, quality.clusters, seed)
     ev = Evaluator(model, plan, targets, weights, quality.change_penalty)
     progress = progress or (lambda p, m: None)
     cancelled = cancelled or (lambda: False)
     max_colors = max(1, min(max_colors, len(filament_ids)))
 
-    beam = sorted((ev.evaluate([(f, 0)]) for f in filament_ids), key=lambda s: s.score)
+    starts = filament_ids
+    if monotonic:  # base: i più scuri (la luce si costruisce verso l'alto)
+        starts = sorted(filament_ids, key=lambda f: lum[f])[:max(2, len(filament_ids) // 2)]
+    beam = sorted((ev.evaluate([(f, 0)]) for f in starts), key=lambda s: s.score)
     pool = list(beam)
     beam = beam[:quality.beam_width]
     for depth in range(1, max_colors):
@@ -161,14 +166,23 @@ def optimize(model: OpticalModel, plan: LayerPlan, target_lab: np.ndarray,
             lo = max(plan.base_layers, last_s + 1)
             for start in range(lo, plan.max_layers, quality.position_step):
                 for f in filament_ids:
-                    if f != last_f:
+                    if f != last_f and (not monotonic or (lum[f] > lum[last_f] and
+                                                          f not in [x for x, _ in sol.sequence])):
                         nxt.append(ev.evaluate(sol.sequence + [(f, start)]))
         if not nxt:
             break
         uniq = {tuple(s.sequence): s for s in nxt}
         nxt = sorted(uniq.values(), key=lambda s: s.score)
         pool += nxt[:quality.beam_width * 3]
-        beam = nxt[:quality.beam_width]
+        # diversità: al massimo 2 varianti (quote diverse) per la stessa sequenza di filamenti,
+        # altrimenti una buona combinazione parziale riempie il fascio e blocca le alternative
+        seen, beam = {}, []
+        for c in nxt:
+            k = tuple(f for f, _ in c.sequence)
+            if seen.get(k, 0) < 2:
+                beam.append(c); seen[k] = seen.get(k, 0) + 1
+            if len(beam) >= quality.beam_width:
+                break
 
     pool = sorted({tuple(s.sequence): s for s in pool}.values(), key=lambda s: s.score)
     best = pool[0]
@@ -179,6 +193,8 @@ def optimize(model: OpticalModel, plan: LayerPlan, target_lab: np.ndarray,
         improved = False
         for i in range(len(best.sequence)):
             for cand in _neighbours(best.sequence, i, filament_ids, plan):
+                if monotonic and any(lum[cand[k + 1][0]] <= lum[cand[k][0]] for k in range(len(cand) - 1)):
+                    continue
                 s = ev.evaluate(cand)
                 if s.score < best.score - 1e-6:
                     best, improved = s, True

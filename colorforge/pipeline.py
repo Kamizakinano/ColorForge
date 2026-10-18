@@ -45,8 +45,9 @@ class JobSettings:
     prep: PrepOptions = field(default_factory=PrepOptions)
     background_reflectance: float = 0.0
     seed: int = 0
-    # "zone": filamenti diversi nello stesso strato (AMS); "layers": cambi per strato (HueForge)
-    mode: str = "zone"
+    # "hueforge": strati dal più scuro al più chiaro con rilievo (predefinito);
+    # "zone": filamenti diversi nello stesso strato (AMS); "layers": cambi per strato senza vincoli
+    mode: str = "hueforge"
     # 0 = massima fedeltà; 1 = meno cambi filamento possibile (accetta più ΔE)
     change_economy: float = 0.3
     # pesi maggiori a contorni, dettagli e soggetto nella scelta dei filamenti
@@ -200,8 +201,14 @@ def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
         return res
     if s.relief_mm > 0:
         warnings.append("Il rilievo 3D è disponibile solo in modalità 'Multicolore per zona': ignorato.")
+    hue = s.mode == "hueforge"
     best, cands, ev = optimize(model, plan, target_lab, s.filament_ids, max_colors, quality,
-                               progress=progress, cancelled=cancelled, seed=s.seed)
+                               progress=progress, cancelled=cancelled, seed=s.seed, monotonic=hue)
+    if hue:  # più candidate distinte da provare sull'immagine: la migliore per ogni combinazione di filamenti
+        by_combo = {}
+        for c in sorted(ev.cache.values(), key=lambda c: c.score):
+            by_combo.setdefault(tuple(f for f, _ in c.sequence), []).append(c)
+        cands = [v for lst in by_combo.values() for v in lst[:3]][:60]
     check()
     log.append(f"Ottimizzazione '{quality.name}': {ev.evaluations} combinazioni valutate, "
                f"ΔE00 medio sui colori rappresentativi {best.mean_de:.2f}.")
@@ -209,9 +216,25 @@ def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
         warnings.append(f"La soluzione richiede {best.changes} cambi colore (limite {ps.max_color_changes}).")
 
     progress(0.85, "Calcolo della mappa delle altezze")
-    levels, _ = assign_levels(target_lab, best.lut_lab, plan.base_layers)
-    levels, _, msg = smooth_levels(levels, target_lab, best.lut_lab)
-    log.append(msg)
+    if hue:
+        from colorforge.imaging.analysis import importance_map
+        from colorforge.optimize.heightmap import smooth_color_levels
+        # le candidate migliori vengono provate sull'immagine con la stessa regola di quota
+        # usata per la stampa; l'errore è pesato su soggetto e contorni (non sullo sfondo)
+        wimp = importance_map(prepared) if s.use_importance else np.ones(target_lab.shape[:2])
+        trial = []
+        for c in [best] + [c for c in cands if c is not best]:
+            if c.lut_lab is None:
+                c = ev.evaluate(c.sequence)
+            lv = smooth_color_levels(target_lab, c.lut_lab, plan.base_layers)
+            e = delta_e2000(target_lab, c.lut_lab[lv])
+            trial.append((float((e * wimp).sum() / wimp.sum()) + quality.change_penalty * c.changes, id(c), c, lv))
+        _, _, best, levels = min(trial, key=lambda t: t[0])
+        log.append(f"Stile HueForge: filamenti dal più scuro al più chiaro, rilievo levigato; provate {len(trial)} combinazioni.")
+    else:
+        levels, _ = assign_levels(target_lab, best.lut_lab, plan.base_layers)
+        levels, _, msg = smooth_levels(levels, target_lab, best.lut_lab)
+        log.append(msg)
     levels, nfix = fix_saddles(levels)
     levels = np.minimum(levels, plan.max_layers)
     if nfix:

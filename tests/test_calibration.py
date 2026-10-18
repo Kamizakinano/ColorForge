@@ -81,7 +81,7 @@ def test_print_feedback_corrects_wrong_parameters(db):
     from tests.conftest import make_image
     fids = ["generic-pla-white", "generic-pla-red", "generic-pla-blue", "generic-pla-yellow"]
     res = run(make_image("many", 80, 60), db, JobSettings(filament_ids=fids, width_mm=40, pixel_mm=0.5,
-                                                          max_colors=4, quality="veloce", flat_top=False))
+                                                          max_colors=4, quality="veloce", flat_top=False, mode="zone"))
     # mondo reale: stessi colori, scattering diverso (TD reale ≠ stimata)
     truth = FilamentDatabase([copy.deepcopy(db.get(f)) for f in fids])
     from colorforge.optics.km import OpticalModel
