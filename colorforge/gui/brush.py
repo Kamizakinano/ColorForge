@@ -28,18 +28,23 @@ class BrushView(QWidget):
         self._painting = False
         bar = QHBoxLayout()
         self.group = QButtonGroup(self)
-        for i, (txt, tip) in enumerate([("✋", "Sposta e zoom"), ("🟩 Proteggi", "Zone da riprodurre con la massima cura"),
-                                        ("🟥 Semplifica", "Zone meno importanti: meno dettagli e meno cambi"),
-                                        ("Gomma", "Cancella le pennellate")]):
+        for i, (txt, tip) in enumerate([("✋", "Sposta e zoom"), ("Proteggi", "Pennello verde: zone da riprodurre con la massima cura"),
+                                        ("Semplifica", "Pennello rosso: zone meno importanti, meno dettagli e meno cambi"),
+                                        ("⌫", "Gomma: cancella le pennellate")]):
             b = QPushButton(txt); b.setCheckable(True); b.setToolTip(tip)
             self.group.addButton(b, i); bar.addWidget(b)
         self.group.button(0).setChecked(True)
         self.group.idClicked.connect(self._set_mode)
-        bar.addWidget(QLabel("Pennello"))
-        self.sl = QSlider(Qt.Orientation.Horizontal); self.sl.setRange(3, 80); self.sl.setValue(18); self.sl.setMinimumWidth(90)
+        self.sl = QSlider(Qt.Orientation.Horizontal); self.sl.setRange(3, 80); self.sl.setValue(18); self.sl.setMinimumWidth(50)
+        self.sl.setToolTip("Dimensione del pennello")
         self.sl.valueChanged.connect(lambda v: setattr(self, "radius", v))
         bar.addWidget(self.sl, 1)
-        clr = QPushButton("Pulisci"); clr.clicked.connect(self.clear); bar.addWidget(clr)
+        clr = QPushButton("🗑"); clr.setToolTip("Cancella tutte le pennellate"); clr.clicked.connect(self.clear); bar.addWidget(clr)
+        bar.setSpacing(4)
+        for b in self.group.buttons():
+            b.setMinimumWidth(0)
+        self.group.button(1).setStyleSheet("QPushButton{border-left:6px solid #28C85A;} QPushButton:checked{background:#1f5f35;}")
+        self.group.button(2).setStyleSheet("QPushButton{border-left:6px solid #E63C3C;} QPushButton:checked{background:#6b2222;}")
         lay = QVBoxLayout(self); lay.setContentsMargins(0, 0, 0, 0)
         lay.addLayout(bar); lay.addWidget(view)
         view.viewport().installEventFilter(self)

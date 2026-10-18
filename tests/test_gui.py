@@ -70,9 +70,9 @@ def test_palette_selection_updates_preview_and_exports_3mf(app, tmp_path, monkey
     w = MainWindow()
     w.sp_width.setValue(20); w.sp_pixel.setValue(0.5)
     w.load_image_path(str(p))
-    assert w.palette.list.count() > 0
-    for i in range(min(3, w.palette.list.count())):
-        w.palette.list.item(i).setCheckState(Qt.CheckState.Checked)
+    assert w.palette.count() > 0
+    for i in range(min(3, w.palette.count())):
+        w.palette.set_checked(i)
     assert _wait(app, lambda: w.result is not None and not (w.thread and w.thread.isRunning()))
     chosen = {f"img-{h.lstrip('#')}" for h in w.palette.selected()}
     assert set(w.result.solution.filaments) <= chosen

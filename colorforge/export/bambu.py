@@ -197,6 +197,9 @@ def template_filaments(template: BambuTemplate):
         vendor = f["vendor"] or "AMS"
         if name.lower().startswith(vendor.lower()):
             name = name[len(vendor):].strip() or f["type"]
+        first = vendor.split()[0].lower() if vendor.split() else ""
+        if first and name.lower().startswith(first + " "):
+            name = name[len(first):].strip()
         fil = Filament.from_hex(f"ams-slot{f['slot']}-{f['colour'].lstrip('#')}", vendor,
                                 f"{name} (slot {f['slot']})", f["colour"], material=f["type"],
                                 color_reliability=Reliability.DECLARED, owned_spools=1,

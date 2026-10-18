@@ -45,14 +45,43 @@ class ZoomView(QGraphicsView):
         self.scene().addItem(self.item)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
 
-    def set_image(self, arr: np.ndarray | None):
+    linked = None
+    sync_enabled = staticmethod(lambda: False)
+    _syncing = False
+
+    def set_image(self, arr: np.ndarray | None, scene_width: float | None = None):
+        """`scene_width`: larghezza logica (es. quella dell'originale) così due viste
+        di immagini a risoluzioni diverse hanno la stessa geometria e lo zoom combacia."""
         self.item.setPixmap(to_pixmap(arr) if arr is not None else QPixmap())
-        self.scene().setSceneRect(self.item.boundingRect())
+        w = self.item.pixmap().width()
+        self.item.setScale(scene_width / w if (scene_width and w) else 1.0)
+        self.scene().setSceneRect(self.item.sceneBoundingRect())
+        self.fit()
+
+    def fit(self):
         self.fitInView(self.item, Qt.AspectRatioMode.KeepAspectRatio)
+        self._push()
+
+    def _push(self):
+        o = self.linked
+        if o is None or self._syncing or not self.sync_enabled():
+            return
+        if abs(o.sceneRect().width() - self.sceneRect().width()) > 1:
+            return
+        o._syncing = True
+        o.setTransform(self.transform())
+        o.centerOn(self.mapToScene(self.viewport().rect().center()))
+        o._syncing = False
+
+    def scrollContentsBy(self, dx, dy):
+        super().scrollContentsBy(dx, dy)
+        self._push()
 
     def wheelEvent(self, e):
         f = 1.25 if e.angleDelta().y() > 0 else 0.8
+        self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.scale(f, f)
+        self._push()
 
 
 class Worker(QObject):
@@ -306,14 +335,32 @@ class MainWindow(QMainWindow):
         self.brush = BrushView(self.v_orig)
         self.brush.changed.connect(self._brush_changed)
         cmp_split = QSplitter()
-        for w, title in ((self.brush, "Originale · pennello"), (self.palette, None), (self.v_sim, "Risultato previsto")):
-            if title:
-                box = QWidget(); bl = QVBoxLayout(box); bl.setContentsMargins(0, 0, 0, 0)
-                bl.addWidget(QLabel(f"<b>{title}</b>")); bl.addWidget(w)
-                cmp_split.addWidget(box)
+        self.v_sim_bar = QWidget(); sb = QHBoxLayout(self.v_sim_bar); sb.setContentsMargins(0, 0, 0, 0)
+        self.ck_sync = QCheckBox("Zoom sincronizzato"); self.ck_sync.setChecked(True)
+        self.ck_sync.setToolTip("Zoom e spostamento uguali su originale e risultato, per confrontare la stessa zona")
+        sb.addWidget(self.ck_sync); sb.addStretch(1)
+        fit = QPushButton("Adatta"); fit.setToolTip("Mostra l'immagine intera")
+        fit.clicked.connect(lambda: (self.v_orig.fit(), self.v_sim.fit()))
+        sb.addWidget(fit)
+        pair = QWidget(); pl = QHBoxLayout(pair); pl.setContentsMargins(0, 0, 0, 0); pl.setSpacing(6)
+        for w, title in ((self.brush, "Originale · pennello"), (None, "Risultato previsto")):
+            box = QWidget(); bl = QVBoxLayout(box); bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(2)
+            bl.addWidget(QLabel(f"<b>{title}</b>"))
+            if w is None:
+                bl.addWidget(self.v_sim_bar); bl.addWidget(self.v_sim, 1)
             else:
-                cmp_split.addWidget(w)
-        cmp_split.setSizes([430, 270, 430])
+                bl.addWidget(w, 1)
+            box.setMinimumWidth(0)
+            from PySide6.QtWidgets import QSizePolicy
+            box.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            pl.addWidget(box, 1)        # stessa larghezza per le due immagini
+        cmp_split.addWidget(pair)
+        cmp_split.addWidget(self.palette)
+        cmp_split.setStretchFactor(0, 1)
+        cmp_split.setSizes([840, 440])
+        self.v_orig.linked = self.v_sim; self.v_sim.linked = self.v_orig
+        self.v_orig.sync_enabled = self.v_sim.sync_enabled = self.ck_sync.isChecked
+        
         ml.addWidget(cmp_split, 1)
         row = QHBoxLayout(); row.addWidget(self.ck_auto); row.addStretch(1); row.addWidget(self.lb_source)
         ml.addLayout(row)
@@ -521,11 +568,11 @@ class MainWindow(QMainWindow):
         from colorforge.color.spaces import delta_e2000, hex_to_srgb
         owned = [f for f in self.db if f.owned_spools > 0]
         if not owned:
-            return None, 0.0
+            return None, 0.0, None
         lab = srgb_to_lab(hex_to_srgb(hx))
         de = [float(delta_e2000(lab, np.array(f.lab))) for f in owned]
         i = int(np.argmin(de))
-        return owned[i].label, de[i]
+        return owned[i].label, de[i], srgb_to_hex(owned[i].srgb)
 
     def suggest_purchases(self):
         if self.image is None:
@@ -804,7 +851,7 @@ class MainWindow(QMainWindow):
             self.brush.set_image(res.original_srgb)
             self.brush.set_mask(getattr(res, "user_mask", None))
         self.v_prep.set_image(res.prepared_srgb)
-        self.v_sim.set_image(res.simulated_srgb)
+        self.v_sim.set_image(res.simulated_srgb, scene_width=res.original_srgb.shape[1])
         self.v_err.set_image(res.error_map_rgb())
         if self.tabs.currentWidget() is not self.v_err:
             self.tabs.setCurrentWidget(self.v_cmp)

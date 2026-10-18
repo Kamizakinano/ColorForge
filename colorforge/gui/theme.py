@@ -38,9 +38,9 @@ def apply_theme(app, dark: bool) -> None:
     p.setColor(QPalette.ColorGroup.Disabled, QPalette.ColorRole.ButtonText, QColor(120, 120, 130))
     app.setPalette(p)
     app.setStyleSheet(
-        "QCheckBox::indicator, QListView::indicator { width: 14px; height: 14px; border: 1px solid #9097A6;"
+        "QCheckBox::indicator, QListView::indicator, QTableView::indicator { width: 14px; height: 14px; border: 1px solid #9097A6;"
         " border-radius: 3px; background: #16181E; }"
-        "QCheckBox::indicator:checked, QListView::indicator:checked { background: #FF7846; border-color: #FF7846; }"
+        "QCheckBox::indicator:checked, QListView::indicator:checked, QTableView::indicator:checked { background: #FF7846; border-color: #FF7846; }"
         "QCheckBox::indicator:disabled { border-color: #50545E; }")
 
 
