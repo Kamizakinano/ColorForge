@@ -73,6 +73,8 @@ def save_project(path: str | Path, res: JobResult, db: FilamentDatabase, history
             for k in ("fa", "a", "fb", "b", "lin", "lab"):
                 z.writestr(f"zone_{k}.npy", _npy(getattr(rs, k)))
             z.writestr("zone_idx.npy", _npy(res.zone["idx"]))
+            if res.zone.get("lift") is not None:
+                z.writestr("zone_lift.npy", _npy(res.zone["lift"]))
     if path.exists():  # mai sovrascrivere senza copia
         os.replace(path, path.with_suffix(path.suffix + ".bak"))
     os.replace(tmp, path)
@@ -110,7 +112,8 @@ def load_project(path: str | Path) -> tuple[JobResult, FilamentDatabase]:
             from colorforge.optimize.regional import RecipeSet
             zj = json.loads(z.read("zone.json"))
             rs = RecipeSet(zj["fids"], zj["base"], *(npy(f"zone_{k}.npy") for k in ("fa", "a", "fb", "b", "lin", "lab")))
-            zone = {"recipes": rs, "idx": npy("zone_idx.npy")}
+            zone = {"recipes": rs, "idx": npy("zone_idx.npy"),
+                    "lift": npy("zone_lift.npy") if "zone_lift.npy" in names else None}
         cands = [Solution([tuple(x) for x in c["sequence"]], c["score"], c["mean_de"]) for c in r["candidates"]]
         res = JobResult(settings, LayerPlan(**r["plan"]), sol, cands, img("original.png"), img("prepared.png"),
                         npy("levels.npy"), img("simulated.png"), npy("error_de.npy").astype(float),

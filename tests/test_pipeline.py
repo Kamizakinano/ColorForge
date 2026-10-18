@@ -96,3 +96,36 @@ def test_suggest_purchases_finds_missing_color(db):
     plan = LayerPlan.from_settings(0.16, 0.08, 0.64, 2.4)
     base, cur, sug = suggest_purchases(m, plan, srgb_to_lab(img), owned, cands, capacity=8)
     assert sug and sug[0][0] == "generic-pla-green" and sug[0][3] > 1
+
+
+def test_relief_raises_subject_and_stays_manifold(db):
+    import numpy as np
+    from PIL import Image
+    from colorforge.imaging.importer import from_pil
+    a = np.full((50, 50, 3), 235, np.uint8)
+    yy, xx = np.mgrid[0:50, 0:50]
+    a[(yy - 25) ** 2 + (xx - 25) ** 2 < 15 ** 2] = (200, 30, 40)   # disco rosso su sfondo chiaro
+    img = from_pil(Image.fromarray(a))
+    flat = run(img, db, settings(width_mm=25, mode="zone"))
+    rel = run(img, db, settings(width_mm=25, mode="zone", relief_mm=3.0))
+    assert rel.mesh_problems == []
+    assert rel.levels[25, 25] - flat.levels[25, 25] >= int(2.5 / 0.08)   # centro rialzato
+    assert abs(int(rel.levels[2, 2]) - int(flat.levels[2, 2])) <= 1        # sfondo invariato
+    assert np.allclose(rel.simulated_srgb, flat.simulated_srgb)            # colori identici
+
+
+def test_accessories_only_when_requested(db, tmp_path):
+    from colorforge.export.threemf import read_3mf_meshes
+    from colorforge.pipeline import export_3mf
+    base = run(make_image("many"), db, settings())
+    n0 = len(read_3mf_meshes(_x(export_3mf, base, tmp_path / "a.3mf")))
+    acc = run(make_image("many"), db, settings(add_frame=True, add_hook=True, add_stand=True))
+    probs = export_3mf(acc, tmp_path / "b.3mf")
+    names = [o[0] for o in read_3mf_meshes(tmp_path / "b.3mf")]
+    assert len(names) == n0 + 4 and any("cornice" in n for n in names)
+    assert all(v == [] for k, v in probs.items() if not k.startswith("_"))
+
+
+def _x(fn, res, path):
+    fn(res, path)
+    return path

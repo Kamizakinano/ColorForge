@@ -53,6 +53,13 @@ class JobSettings:
     use_importance: bool = True
     # usa un solo materiale (quello più presente tra i selezionati): PLA e PETG non aderiscono bene
     single_material: bool = True
+    # rilievo 3D (solo modalità per zona): altezza in mm del soggetto sopra lo sfondo, 0 = piatto
+    relief_mm: float = 0.0
+    # accessori opzionali (generati solo se richiesti)
+    add_frame: bool = False
+    add_hook: bool = False
+    add_stand: bool = False
+    frame_mm: float = 5.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -165,6 +172,8 @@ def run(image: LoadedImage, db: FilamentDatabase, s: JobSettings,
     if s.mode == "zone":
         return _run_zone(image, db, s, model, plan, target_lab, prepared, max_colors, changer,
                          warnings, log, progress, check, t0)
+    if s.relief_mm > 0:
+        warnings.append("Il rilievo 3D è disponibile solo in modalità 'Multicolore per zona': ignorato.")
     best, cands, ev = optimize(model, plan, target_lab, s.filament_ids, max_colors, quality,
                                progress=progress, cancelled=cancelled, seed=s.seed)
     check()
@@ -240,8 +249,16 @@ def _run_zone(image, db, s, model, plan, target_lab, prepared, max_colors, chang
     sim_lab = rs.lab[idx]
     err = delta_e2000(target_lab, sim_lab)
     simulated = linear_to_srgb(rs.lin[idx])
+    lift = None
+    if s.relief_mm > 0:
+        from colorforge.imaging.analysis import relief_map, subject_mask_robust
+        subj = subject_mask_robust(prepared)
+        rel = relief_map(prepared, subj, s.relief_mm, s.pixel_mm)
+        lift = np.rint(rel / plan.layer_mm).astype(np.int64)
+        levels = levels + lift
+        log.append(f"Rilievo 3D: soggetto rialzato fino a {s.relief_mm:.1f} mm ({subj.mean() * 100:.0f}% dell'immagine).")
     progress(0.85, "Costruzione e verifica della geometria")
-    objects = build_objects(rs, idx, plan, s.pixel_mm)
+    objects = build_objects(rs, idx, plan, s.pixel_mm, lift)
     problems = [f"{k[1]} ({k[0]}): {p}" for k, m in objects.items() for p in validate(m)]
     ssim = float(structural_similarity(target_lab[..., 0], sim_lab[..., 0], data_range=100))
     metrics = {
@@ -293,7 +310,7 @@ def _run_zone(image, db, s, model, plan, target_lab, prepared, max_colors, chang
                         "Riduci 'Colori massimi' o usa la modalità 'Cambi per strato' per stampe più rapide.")
     res = JobResult(s, plan, sol, [sol], image.srgb, prepared, levels, simulated, err, reliability,
                     warnings, log, metrics, estimate, swaps, problems, time.time() - t0,
-                    zone={"recipes": rs, "idx": idx}, objects=objects)
+                    zone={"recipes": rs, "idx": idx, "lift": lift}, objects=objects)
     return res
 
 
@@ -338,7 +355,8 @@ def band_meshes(res: JobResult) -> list[tuple[str, str, int, Mesh, dict]]:
     out = []
     if res.zone is not None:
         from colorforge.optimize.regional import build_objects
-        objs = res.objects or build_objects(res.zone["recipes"], res.zone["idx"], res.plan, res.settings.pixel_mm)
+        objs = res.objects or build_objects(res.zone["recipes"], res.zone["idx"], res.plan, res.settings.pixel_mm,
+                                            res.zone.get("lift"))
         by_id = {sw["id"]: sw for sw in res.swaps}
         order = {"base": 0, "medio": 1, "sopra": 2}
         for (role, f), m in sorted(objs.items(), key=lambda kv: (order[kv[0][0]], by_id[kv[0][1]]["slot"])):
@@ -357,11 +375,27 @@ def band_meshes(res: JobResult) -> list[tuple[str, str, int, Mesh, dict]]:
     return out
 
 
+def _with_accessories(res: JobResult, bands: list) -> list:
+    s = res.settings
+    if not (s.add_frame or s.add_hook or s.add_stand) or not bands:
+        return bands
+    from colorforge.color.spaces import srgb_to_lab as _lab
+    from colorforge.geometry.accessories import accessories_for
+    H, W = res.levels.shape
+    top = max(float(m.vertices[:, 2].max()) for _, _, _, m, _ in bands)
+    # filamento più scuro tra quelli usati: cornice e accessori stanno bene scuri
+    sws = {sw["id"]: sw for _, _, _, _, sw in bands}
+    dark = min(sws.values(), key=lambda sw: _lab(__import__("colorforge.color.spaces", fromlist=["x"]).hex_to_srgb(sw["colore"]))[0])
+    for name, m in accessories_for(W * s.pixel_mm, H * s.pixel_mm, top, s.add_frame, s.add_hook, s.add_stand, s.frame_mm):
+        bands.append((f"slot {dark['slot']} - {name}", dark["colore"], int(dark["slot"]), m, dark))
+    return bands
+
+
 def export_3mf(res: JobResult, path: str | Path, progress=None, template=None) -> dict:
     """Esporta il 3MF. Con `template` (progetto Bambu modello) scrive un progetto
     Bambu Studio con le parti già assegnate agli slot; altrimenti un 3MF standard.
     Ritorna i problemi geometrici per parte."""
-    bands = band_meshes(res)
+    bands = _with_accessories(res, band_meshes(res))
     problems = {name: validate(m) for name, _, _, m, _ in bands}
     if template is not None:
         from colorforge.export.bambu import map_to_template_slots, write_bambu_project
@@ -370,7 +404,7 @@ def export_3mf(res: JobResult, path: str | Path, progress=None, template=None) -
         notes = []
         for name, c, _sl, m, sw in bands:
             slot, de = mapping[sw["id"]]
-            role = name.rsplit("(", 1)[-1].rstrip(")") if "(" in name else ""
+            role = name.rsplit("(", 1)[-1].rstrip(")") if "(" in name else name.split(" - ", 1)[-1]
             parts.append((f"slot {slot} - {sw['filamento']}" + (f" ({role})" if role else ""), slot, m))
             if de > 5 and f"{sw['filamento']}" not in " ".join(notes):
                 notes.append(f"{sw['filamento']} → slot {slot} (colore diverso, ΔE {de:.0f})")

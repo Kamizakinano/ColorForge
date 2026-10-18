@@ -229,6 +229,24 @@ class MainWindow(QMainWindow):
             v.addWidget(w)
         sl.addWidget(g)
 
+        g = QGroupBox("Rilievo e accessori (facoltativi)")
+        v = QVBoxLayout(g)
+        rl = QHBoxLayout()
+        self.ck_relief = QCheckBox("Rilievo 3D del soggetto")
+        self.sp_relief = QDoubleSpinBox(); self.sp_relief.setRange(0.5, 15); self.sp_relief.setValue(4.0); self.sp_relief.setSuffix(" mm")
+        self.sp_relief.setEnabled(False)
+        self.ck_relief.toggled.connect(self.sp_relief.setEnabled)
+        rl.addWidget(self.ck_relief); rl.addWidget(self.sp_relief)
+        v.addLayout(rl)
+        self.ck_frame = QCheckBox("Aggiungi cornice")
+        self.ck_hook = QCheckBox("Aggiungi gancio per appendere")
+        self.ck_stand = QCheckBox("Aggiungi piedini d'appoggio")
+        for w in (self.ck_frame, self.ck_hook, self.ck_stand):
+            v.addWidget(w)
+        v.addWidget(QLabel("<small>Il rilievo richiede la modalità 'Multicolore per zona'. Gli accessori "
+                           "vengono aggiunti al 3MF solo se spuntati.</small>"))
+        sl.addWidget(g)
+
         self.bt_run = QPushButton("▶  Elabora automaticamente")
         self.bt_run.setStyleSheet("font-weight:bold; padding:8px;")
         self.bt_run.clicked.connect(self.start)
@@ -364,7 +382,10 @@ class MainWindow(QMainWindow):
                         width_mm=self.sp_width.value(), pixel_mm=self.sp_pixel.value(),
                         max_colors=self.sp_colors.value(), quality=self.cb_quality.currentData(),
                         mode=self.cb_mode.currentData(),
-                        change_economy=self.sl_econ.value() / 100, use_importance=self.ck_imp.isChecked())
+                        change_economy=self.sl_econ.value() / 100, use_importance=self.ck_imp.isChecked(),
+                        relief_mm=self.sp_relief.value() if self.ck_relief.isChecked() else 0.0,
+                        add_frame=self.ck_frame.isChecked(), add_hook=self.ck_hook.isChecked(),
+                        add_stand=self.ck_stand.isChecked())
         s.print.layer_height_mm = self.sp_layer.value()
         s.print.first_layer_height_mm = max(self.sp_layer.value(), 0.16)
         s.print.base_thickness_mm = self.sp_base.value()

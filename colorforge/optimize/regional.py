@@ -132,12 +132,16 @@ def choose_filaments(model, plan, target_lab, fids, capacity, progress=None, see
     return [fids[i] for i in chosen], cur
 
 
-def objects_intervals(rs: RecipeSet, idx: np.ndarray, B: int):
-    """{(ruolo, filamento): (lo, hi)} per ogni oggetto, quote in strati assoluti."""
+def objects_intervals(rs: RecipeSet, idx: np.ndarray, B: int, lift: np.ndarray | None = None):
+    """{(ruolo, filamento): (lo, hi)} per ogni oggetto, quote in strati assoluti.
+    `lift` (strati per pixel) alza la base sotto il soggetto: rilievo 3D. Il colore
+    non cambia perché la pila colorata resta identica, solo spostata più in alto."""
     fa, a, fb, b = rs.fa[idx], rs.a[idx], rs.fb[idx], rs.b[idx]
     objs = {}
     zero = np.zeros(idx.shape, dtype=np.int64)
-    base_hi = np.full(idx.shape, B, dtype=np.int64)
+    if lift is not None:
+        B = B + np.asarray(lift, dtype=np.int64)
+    base_hi = np.broadcast_to(np.asarray(B, dtype=np.int64), idx.shape).copy()
     objs[("base", rs.fids[rs.base])] = (zero, base_hi)
     for j, f in enumerate(rs.fids):
         m = fa == j
@@ -182,10 +186,14 @@ def _clean_isolated(idx, rs, target_lab):
     return idx, changed
 
 
-def build_objects(rs: RecipeSet, idx: np.ndarray, plan: LayerPlan, pixel_mm: float):
+def build_objects(rs: RecipeSet, idx: np.ndarray, plan: LayerPlan, pixel_mm: float, lift=None):
     """Mesh chiusa e manifold per ogni (ruolo, filamento)."""
-    return {k: interval_mesh(lo, hi, pixel_mm, plan.z_of_level)
-            for k, (lo, hi) in objects_intervals(rs, idx, plan.base_layers).items()}
+    z = plan.z_of_level
+    if lift is not None and np.any(lift):
+        # oltre lo spessore massimo del piano colori: strati della stessa altezza
+        z = lambda l: np.where(np.asarray(l) <= 0, 0.0, plan.first_layer_mm + (np.asarray(l) - 1) * plan.layer_mm)
+    return {k: interval_mesh(lo, hi, pixel_mm, z)
+            for k, (lo, hi) in objects_intervals(rs, idx, plan.base_layers, lift).items()}
 
 
 def subset_score(model, plan, targets, weights, fids: list[str], base_first: bool = True) -> float:

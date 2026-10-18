@@ -124,3 +124,33 @@ def importance_map(srgb: np.ndarray, detail: float = 1.0, center: float = 0.5) -
     except Exception:  # la stima del soggetto è facoltativa
         pass
     return wmap / wmap.mean()
+
+
+def subject_mask_robust(srgb: np.ndarray) -> np.ndarray:
+    """Soggetto principale: prima l'euristica sul bordo; se fallisce, colori saturi
+    o scuri rispetto allo sfondo chiaro. Ritorna la componente più grande, chiusa."""
+    m = subject_mask(srgb)
+    if not (0.05 < m.mean() < 0.95):
+        lab = srgb_to_lab(srgb)
+        border = np.concatenate([lab[0], lab[-1], lab[:, 0], lab[:, -1]])
+        bgL = np.median(border[:, 0])
+        chroma = np.hypot(lab[..., 1], lab[..., 2])
+        m = (chroma > 14) | (np.abs(lab[..., 0] - bgL) > 30)
+        m = ndimage.binary_closing(ndimage.binary_opening(m, iterations=1), iterations=4)
+        lbl, n = ndimage.label(m)
+        if n:
+            m = lbl == (int(np.argmax(ndimage.sum(m, lbl, range(1, n + 1)))) + 1)
+    return ndimage.binary_fill_holes(m)
+
+
+def relief_map(srgb: np.ndarray, mask: np.ndarray, height_mm: float, pixel_mm: float,
+               edge_mm: float = 4.0, detail: float = 0.25) -> np.ndarray:
+    """Altezza aggiuntiva (mm) del rilievo: cupola sul soggetto con bordo raccordato
+    largo `edge_mm` e lieve modellato dalla luminosità (le zone scure rientrano)."""
+    if height_mm <= 0 or not mask.any():
+        return np.zeros(mask.shape)
+    dist = ndimage.distance_transform_edt(mask) * pixel_mm
+    dome = np.clip(dist / max(edge_mm, pixel_mm), 0, 1) ** 0.6
+    L = ndimage.gaussian_filter(srgb_to_lab(srgb)[..., 0] / 100.0, 1.5)
+    shape = dome * (1 - detail + detail * L)
+    return ndimage.gaussian_filter(shape, 1.0) * height_mm * mask
