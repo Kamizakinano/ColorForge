@@ -17,7 +17,6 @@ PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 UninstallDisplayIcon={app}\ColorForge.exe
 SetupIconFile=colorforge.ico
-SetupIconFile=colorforge.ico
 
 [Languages]
 Name: "it"; MessagesFile: "compiler:Languages\Italian.isl"
