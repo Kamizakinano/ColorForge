@@ -224,3 +224,141 @@ def map_to_template_slots(parts_info: list[tuple[str, str]], template: BambuTemp
         d, sl = min(de)
         out[fid] = (sl, d)
     return out
+
+
+def _floats(v, n, default):
+    try:
+        out = [float(x) for x in (v or [])][:n]
+    except (TypeError, ValueError):
+        out = []
+    return out + [default] * (n - len(out))
+
+
+def template_tables(template: BambuTemplate):
+    """(matrice di spurgo mm³ [da][a], costo €/kg, densità g/cm³, n. ugelli, moltiplicatore)."""
+    s = template.settings
+    n = len(template.filaments)
+    m = _floats(s.get("flush_volumes_matrix"), n * n, 300.0)
+    mat = np.array(m[:n * n]).reshape(n, n)
+    cost = _floats(s.get("filament_cost"), n, 20.0)
+    dens = _floats(s.get("filament_density"), n, 1.24)
+    nozzles = len(s.get("nozzle_diameter") or [1])
+    mult = _floats(s.get("flush_multiplier"), 1, 1.0)[0]
+    return mat, np.array(cost), np.array(dens), nozzles, mult
+
+
+def layer_slot_sets(res, slot_of: dict[str, int]) -> list[list[int]]:
+    """Per ogni strato, gli slot (1-based) presenti, dal basso."""
+    if res.zone is None:
+        seq = res.solution.sequence
+        top = int(res.levels.max())
+        out = []
+        for l in range(top):
+            f = [fid for i, (fid, st) in enumerate(seq)
+                 if st <= l < (seq[i + 1][1] if i + 1 < len(seq) else 10 ** 9)]
+            out.append([slot_of[f[0]]] if f else [])
+        return out
+    rs, idx = res.zone["recipes"], res.zone["idx"]
+    lift = res.zone.get("lift")
+    B = res.plan.base_layers + (0 if lift is None else lift)
+    fa, a, fb, b = rs.fa[idx], rs.a[idx], rs.fb[idx], rs.b[idx]
+    top = int(res.levels.max())
+    base_slot = slot_of[rs.fids[rs.base]]
+    out = []
+    for l in range(top):
+        rel = l - B
+        here = np.where(rel < 0, -3, np.where(rel < a, fa, np.where(rel < a + b, fb, -1)))
+        vals = set(np.unique(here[res.levels > l]).tolist())
+        sl = set()
+        if -3 in vals:
+            sl.add(base_slot)
+        sl |= {slot_of[rs.fids[v]] for v in vals if v >= 0}
+        out.append(sorted(sl))
+    return out
+
+
+def purge_estimate(res, template: BambuTemplate, slot_of: dict[str, int]) -> dict:
+    """Spurgo stimato con la matrice reale del progetto. Ordine per strato: si parte
+    dall'ultimo filamento usato e si sceglie ogni volta il cambio meno costoso.
+    Con due ugelli (X2D) il secondo filamento più usato resta sul secondo ugello:
+    i passaggi da/verso di lui non richiedono spurgo."""
+    mat, cost, dens, nozzles, mult = template_tables(template)
+    layers = layer_slot_sets(res, slot_of)
+    usage = {}
+    for ls in layers:
+        for s_ in ls:
+            usage[s_] = usage.get(s_, 0) + 1
+    parked = None
+    if nozzles >= 2 and len(usage) >= 2:
+        parked = sorted(usage, key=lambda k: -usage[k])[1]
+    cur, changes, vol = None, 0, np.zeros(len(mat))
+    for ls in layers:
+        todo = list(ls)
+        while todo:
+            if cur is None:
+                nxt = todo[0]
+            else:
+                nxt = min(todo, key=lambda t: 0 if t == cur else
+                          (0 if parked in (t, cur) else mat[cur - 1, t - 1]))
+            if cur is not None and nxt != cur:
+                changes += 1
+                if parked not in (nxt, cur):
+                    vol[nxt - 1] += mat[cur - 1, nxt - 1] * mult
+            cur = nxt
+            todo.remove(nxt)
+    grams = vol * dens / 1000.0
+    return {"cambi": changes, "spurgo_g": float(grams.sum()),
+            "spurgo_g_per_slot": {i + 1: round(float(g), 2) for i, g in enumerate(grams) if g > 0},
+            "ugello_secondario_slot": parked, "costo_eur_kg": cost.tolist(), "densita": dens.tolist()}
+
+
+def cost_estimate(res, template: BambuTemplate, slot_of: dict[str, int], db) -> dict:
+    """Costo stimato: filamento del modello + spurgo, con i prezzi €/kg del progetto."""
+    pe = purge_estimate(res, template, slot_of)
+    model_g = {}
+    for label, g in res.estimate.get("filamento_g", {}).items():
+        model_g[label] = g
+    per_slot = {}
+    for f in db:
+        if f.label in model_g and f.id in slot_of:
+            per_slot[slot_of[f.id]] = per_slot.get(slot_of[f.id], 0.0) + model_g[f.label]
+    costs = pe["costo_eur_kg"]
+    total_g = {s: per_slot.get(s, 0.0) + pe["spurgo_g_per_slot"].get(s, 0.0) for s in set(per_slot) | set(pe["spurgo_g_per_slot"])}
+    eur = {s: round(g * costs[s - 1] / 1000.0, 2) for s, g in total_g.items() if 1 <= s <= len(costs)}
+    return {**pe, "modello_g_per_slot": {k: round(v, 2) for k, v in per_slot.items()},
+            "totale_g_per_slot": {k: round(v, 2) for k, v in total_g.items()},
+            "costo_eur_per_slot": eur, "costo_eur": round(sum(eur.values()), 2)}
+
+
+def read_slice_info(path: str | Path) -> dict:
+    """Valori reali dallo slicer: apri in Bambu Studio, fai lo slicing e salva il
+    progetto (o esporta il file .gcode.3mf). Ritorna tempo, peso, filamenti."""
+    import xml.etree.ElementTree as ET
+    try:
+        with zipfile.ZipFile(path) as z:
+            root = ET.fromstring(z.read("Metadata/slice_info.config"))
+            try:
+                settings = json.loads(z.read("Metadata/project_settings.config"))
+            except KeyError:
+                settings = {}
+    except (zipfile.BadZipFile, KeyError, ET.ParseError) as e:
+        raise ValueError("Nel file non ci sono dati di slicing: fai lo slicing in Bambu Studio e salva il progetto.") from e
+    plates = []
+    costs = _floats(settings.get("filament_cost"), 32, 20.0)
+    for p in root.iterfind("plate"):
+        md = {m.get("key"): m.get("value") for m in p.iterfind("metadata")}
+        fil = []
+        for f in p.iterfind("filament"):
+            fid = int(f.get("id", "0") or 0)
+            g = float(f.get("used_g", "0") or 0)
+            fil.append({"slot": fid, "tipo": f.get("type", ""), "colore": f.get("color", ""),
+                        "metri": float(f.get("used_m", "0") or 0), "grammi": g,
+                        "costo_eur": round(g * costs[fid - 1] / 1000.0, 2) if 1 <= fid <= len(costs) else None})
+        if md.get("prediction") is None and not fil:
+            continue
+        plates.append({"piatto": md.get("index", "1"), "tempo_s": float(md.get("prediction", 0) or 0),
+                       "peso_g": float(md.get("weight", 0) or 0), "filamenti": fil,
+                       "costo_eur": round(sum(x["costo_eur"] or 0 for x in fil), 2)})
+    if not plates:
+        raise ValueError("Il progetto non è ancora stato slicato: premi 'Slice' in Bambu Studio e salva di nuovo.")
+    return {"piatti": plates}

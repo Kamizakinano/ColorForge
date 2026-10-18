@@ -62,3 +62,30 @@ def test_bambu_project_from_user_template(tmp_path):
     assert mp["ams-slot2-000000"][0] == 2 and mp["img-F82020"][0] == 3
     with pytest.raises(ValueError):
         write_bambu_project([("x", 9, m)], out, t, 0.08, 0.16)
+
+
+def test_purge_cost_and_slice_info(db, tmp_path):
+    import zipfile
+    from colorforge.export.bambu import BambuTemplate, cost_estimate, purge_estimate, read_slice_info
+    from colorforge.pipeline import JobSettings, run
+    from tests.conftest import make_image
+    fids = ["generic-pla-white", "generic-pla-red", "generic-pla-blue"]
+    res = run(make_image("saturated"), db, JobSettings(filament_ids=fids, width_mm=20, pixel_mm=0.5, quality="veloce"))
+    mat = [0, 100, 200, 100, 0, 300, 200, 300, 0]
+    st = {"filament_colour": ["#FFFFFF", "#FF0000", "#0000FF"], "flush_volumes_matrix": [str(x) for x in mat],
+          "filament_cost": ["20", "25", "30"], "filament_density": ["1.24"] * 3, "nozzle_diameter": ["0.4"]}
+    t1 = BambuTemplate("t", st, "02.08.02.60")
+    slots = {f: i + 1 for i, f in enumerate(fids)}
+    one = purge_estimate(res, t1, slots)
+    two = purge_estimate(res, BambuTemplate("t", {**st, "nozzle_diameter": ["0.4", "0.4"]}, ""), slots)
+    assert one["spurgo_g"] > 0 and two["spurgo_g"] < one["spurgo_g"] and two["ugello_secondario_slot"]
+    c = cost_estimate(res, t1, slots, db)
+    assert c["costo_eur"] > 0
+    p = tmp_path / "s.3mf"
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr("Metadata/slice_info.config", '<config><plate><metadata key="index" value="1"/>'
+                   '<metadata key="prediction" value="3600"/><metadata key="weight" value="12.5"/>'
+                   '<filament id="2" type="PLA" color="#FF0000" used_m="1.5" used_g="4.0"/></plate></config>')
+        z.writestr("Metadata/project_settings.config", '{"filament_cost": ["20", "25"]}')
+    info = read_slice_info(p)
+    assert info["piatti"][0]["tempo_s"] == 3600 and info["piatti"][0]["filamenti"][0]["costo_eur"] == 0.1

@@ -324,6 +324,9 @@ class MainWindow(QMainWindow):
         a.triggered.connect(self.open_print_feedback)
         cm.addAction(a)
         m = self.menuBar().addMenu("&File")
+        a2 = QAction("Leggi tempi e costi reali dallo slicer…", self)
+        a2.triggered.connect(self.read_slicer_estimate)
+        m.addAction(a2)
         a = QAction("Imposta progetto Bambu di riferimento (i tuoi slot AMS)…", self)
         a.triggered.connect(self.set_bambu_template)
         m.addAction(a)
@@ -478,6 +481,45 @@ class MainWindow(QMainWindow):
             return load_template(p)
         except ValueError:
             return None
+
+    def _cost_html(self, res) -> str:
+        tpl = self.bambu_template()
+        if tpl is None:
+            return ("<p><small>Imposta il progetto Bambu di riferimento per stimare spurgo e costo con i dati "
+                    "reali dei tuoi filamenti.</small></p>")
+        try:
+            from colorforge.export.bambu import cost_estimate, map_to_template_slots
+            db = getattr(self, "result_db", self.db)
+            mp = map_to_template_slots([(sw["id"], sw["colore"]) for sw in res.swaps], tpl)
+            c = cost_estimate(res, tpl, {k: v[0] for k, v in mp.items()}, db)
+        except Exception as e:  # la stima è informativa: mai bloccare l'interfaccia
+            log.warning("Stima costi non disponibile: %s", e)
+            return ""
+        nz = f" · secondo ugello per lo slot {c['ugello_secondario_slot']}" if c["ugello_secondario_slot"] else ""
+        return (f"<p><b>Stima con i dati del tuo progetto Bambu:</b> {c['cambi']} cambi, spurgo ~{c['spurgo_g']:.0f} g{nz}, "
+                f"costo filamento ~{c['costo_eur']:.2f} €<br><small>Per i valori esatti: slicing in Bambu Studio, "
+                "salva, poi File → Leggi tempi e costi reali dallo slicer.</small></p>")
+
+    def read_slicer_estimate(self):
+        from colorforge.export.bambu import read_slice_info
+        p, _ = QFileDialog.getOpenFileName(self, "Progetto slicato da Bambu Studio", str(Path.home()),
+                                           "Progetto Bambu (*.3mf)")
+        if not p:
+            return
+        try:
+            info = read_slice_info(p)
+        except ValueError as e:
+            QMessageBox.warning(self, "Slicer", str(e))
+            return
+        lines = []
+        for pl in info["piatti"]:
+            h, mnt = divmod(int(pl["tempo_s"] // 60), 60)
+            lines.append(f"Piatto {pl['piatto']}: {h} h {mnt} min · {pl['peso_g']:.1f} g · ~{pl['costo_eur']:.2f} €")
+            for f in pl["filamenti"]:
+                cst = f" · {f['costo_eur']:.2f} €" if f["costo_eur"] is not None else ""
+                lines.append(f"   slot {f['slot']} {f['tipo']} {f['colore']}: {f['grammi']:.1f} g ({f['metri']:.2f} m){cst}")
+        QMessageBox.information(self, "Valori reali dallo slicer", "\n".join(lines) +
+                                "\n\nCosti calcolati con i prezzi €/kg impostati nei profili filamento di Bambu Studio.")
 
     def set_bambu_template(self):
         import shutil
@@ -676,6 +718,7 @@ class MainWindow(QMainWindow):
         e = r["stima_stampa"]
         html.append(f"</ol><p>Altezza {e['altezza_totale_mm']} mm · {e['numero_strati']} strati · "
                     f"{e['cambi_colore']} cambi · ~{e['tempo_min_stimato']:.0f} min (stima)</p>")
+        html.append(self._cost_html(res))
         if res.warnings:
             html.append("<p><b>Avvisi:</b></p><ul>" + "".join(f"<li>{w}</li>" for w in res.warnings) + "</ul>")
         html.append("<p><b>Operazioni:</b></p><ul>" + "".join(f"<li>{w}</li>" for w in res.log) + "</ul>")
